@@ -39,13 +39,16 @@ interface EmbeddingResponse {
   };
 }
 
-/** Embedding 错误响应 */
+/** Embedding 错误响应（兼容 OpenAI / SiliconFlow 等格式） */
 interface EmbeddingErrorResponse {
   error?: {
     message: string;
     type?: string;
     code?: string;
   };
+  /** SiliconFlow 等 provider 使用顶层 message/code */
+  message?: string;
+  code?: number | string;
 }
 
 /** Embedding 结果 */
@@ -968,7 +971,12 @@ export class EmbeddingClient {
     const data = (await response.json()) as EmbeddingResponse & EmbeddingErrorResponse;
 
     if (!response.ok || data.error) {
-      const errorMsg = data.error?.message || `HTTP ${response.status}`;
+      // 兼容 OpenAI `{error:{message}}` 与 SiliconFlow `{code,message}` 两种错误体
+      const errorMsg =
+        data.error?.message ||
+        data.message ||
+        (typeof data.code !== 'undefined' ? `code=${data.code}` : undefined) ||
+        `HTTP ${response.status}`;
       throw new Error(`Embedding API 错误: ${errorMsg}`);
     }
 

@@ -119,6 +119,35 @@ test('非 413 错误应保持原有行为直接抛出', async () => {
   }
 });
 
+test('SiliconFlow 风格错误体应透出 message，而不是只报 HTTP 状态码', async () => {
+  const client = new EmbeddingClient(TEST_CONFIG);
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      JSON.stringify({
+        code: 20015,
+        message: 'The parameter is invalid. Please check again.',
+        data: null,
+      }),
+      {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () => client.embedBatch(['oversized-chunk'], 1),
+      /The parameter is invalid/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 test('每次 HTTP 请求都应按 key 池轮询 Authorization', async () => {
   const client = new EmbeddingClient({
     ...TEST_CONFIG,
