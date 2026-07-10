@@ -56,7 +56,7 @@ export class SemanticSplitter {
       console.warn(
         `[SemanticSplitter] Unknown index domain for ${filePath}, falling back to simple split`,
       );
-      return this.fallbackSplit(code, filePath, language);
+      return this.enforceChunkSizeLimits(this.fallbackSplit(code, filePath, language));
     }
 
     // 记录索引域信息（调试用）
@@ -72,8 +72,8 @@ export class SemanticSplitter {
     const initialContext = [filePath];
     const windows = this.visitNode(tree.rootNode, initialContext);
 
-    // 4. 生成结果
-    return this.windowsToChunks(windows, filePath, language);
+    // 4. 生成结果，并强制拆分超长叶子/单行（如内嵌 base64）
+    return this.enforceChunkSizeLimits(this.windowsToChunks(windows, filePath, language));
   }
 
   /**
@@ -88,7 +88,81 @@ export class SemanticSplitter {
    * @returns 处理后的分片数组
    */
   public splitPlainText(code: string, filePath: string, language: string): ProcessedChunk[] {
-    return this.fallbackSplit(code, filePath, language);
+    return this.enforceChunkSizeLimits(this.fallbackSplit(code, filePath, language));
+  }
+
+  /**
+   * 强制拆分超过物理字符上限的 chunk。
+   *
+   * 触发场景：
+   * - AST 叶子节点（如超长字符串字面量）无法继续递归
+   * - fallback 按行切分时遇到单行超长（常见于内嵌 base64 / minified 行）
+   *
+   * 不处理则会导致 Embedding API 因超 token 返回 400，
+   * 进而拖垮整批自愈索引。
+   */
+  private enforceChunkSizeLimits(chunks: ProcessedChunk[]): ProcessedChunk[] {
+    const maxChars = this.config.maxRawChars;
+    if (maxChars <= 0) return chunks;
+
+    const result: ProcessedChunk[] = [];
+    for (const chunk of chunks) {
+      if (chunk.displayCode.length <= maxChars) {
+        result.push(chunk);
+        continue;
+      }
+      result.push(...this.forceSplitOversizedChunk(chunk, maxChars));
+    }
+    return result;
+  }
+
+  /**
+   * 将单个超长 chunk 按 maxChars 窗口硬切，保持 rawSpan 首尾相接覆盖原范围。
+   */
+  private forceSplitOversizedChunk(chunk: ProcessedChunk, maxChars: number): ProcessedChunk[] {
+    const code = chunk.displayCode;
+    const { metadata } = chunk;
+    const pieces: ProcessedChunk[] = [];
+    let offset = 0;
+    let pieceIndex = 0;
+
+    while (offset < code.length) {
+      const end = Math.min(offset + maxChars, code.length);
+      const pieceCode = code.slice(offset, end);
+      const absStart = metadata.startIndex + offset;
+      const absEnd = metadata.startIndex + end;
+      const isFirst = pieceIndex === 0;
+      const isLast = end >= code.length;
+
+      // 粗略 NWS：去掉空白后的长度，仅用于预算统计
+      let nwsSize = 0;
+      for (let i = 0; i < pieceCode.length; i++) {
+        const ch = pieceCode.charCodeAt(i);
+        if (ch !== 32 && ch !== 9 && ch !== 10 && ch !== 13) nwsSize++;
+      }
+
+      pieces.push({
+        displayCode: pieceCode,
+        vectorText: generateVectorText(pieceCode, metadata.contextPath),
+        nwsSize,
+        metadata: {
+          ...metadata,
+          startIndex: absStart,
+          endIndex: absEnd,
+          // 首片继承前置 gap，末片继承原 end，中间片用内容边界，保证 rawSpan 无空洞
+          rawSpan: {
+            start: isFirst ? metadata.rawSpan.start : absStart,
+            end: isLast ? metadata.rawSpan.end : absEnd,
+          },
+          vectorSpan: { start: absStart, end: absEnd },
+        },
+      });
+
+      offset = end;
+      pieceIndex++;
+    }
+
+    return pieces;
   }
 
   /**
