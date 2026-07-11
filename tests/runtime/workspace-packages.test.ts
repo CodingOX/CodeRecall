@@ -33,12 +33,22 @@ for (const relativePath of requiredFiles) {
   assert.equal(fs.existsSync(filePath), true, `缺少文件: ${relativePath}`);
 }
 
-const workspaceContent = fs.readFileSync(path.resolve(process.cwd(), 'pnpm-workspace.yaml'), 'utf8');
-assert.equal(workspaceContent.includes('packages/*'), true, 'pnpm-workspace.yaml 必须包含 packages/*');
+const workspaceContent = fs.readFileSync(
+  path.resolve(process.cwd(), 'pnpm-workspace.yaml'),
+  'utf8',
+);
+assert.equal(
+  workspaceContent.includes('packages/*'),
+  true,
+  'pnpm-workspace.yaml 必须包含 packages/*',
+);
 
 for (const packageDefinition of packageDefinitions) {
   const pkg = JSON.parse(
-    fs.readFileSync(path.resolve(process.cwd(), `packages/${packageDefinition.dir}/package.json`), 'utf8'),
+    fs.readFileSync(
+      path.resolve(process.cwd(), `packages/${packageDefinition.dir}/package.json`),
+      'utf8',
+    ),
   ) as {
     name: string;
     exports?: {
