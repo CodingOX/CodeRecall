@@ -397,6 +397,66 @@ test('batchIndex 子批次写入 LanceDB 失败时不应删除旧向量', async 
   }
 });
 
+test('batchIndex 的 FTS 写入失败时不得确认 vector_index_hash', async () => {
+  const projectId = `batch-fts-failure-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const db = initDb(projectId);
+  const filePath = 'fts-failure.ts';
+  const file = {
+    path: filePath,
+    hash: 'fts-failure-hash',
+    chunks: [
+      {
+        displayCode: 'export const value = 1;',
+        vectorText: 'export const value = 1;',
+        nwsSize: 20,
+        metadata: {
+          filePath,
+          language: 'typescript',
+          contextPath: [filePath],
+          startIndex: 0,
+          endIndex: 23,
+          rawSpan: { start: 0, end: 23 },
+          vectorSpan: { start: 0, end: 23 },
+        },
+      },
+    ] as ProcessedChunk[],
+  };
+
+  batchUpsert(db, [
+    {
+      path: file.path,
+      hash: file.hash,
+      mtime: Date.now(),
+      size: 23,
+      content: file.chunks[0].displayCode,
+      language: 'typescript',
+      vectorIndexHash: null,
+    },
+  ]);
+
+  // 保留同名表让 isChunksFtsInitialized() 返回 true，但制造确定的 schema 写入失败。
+  db.exec('DROP TABLE chunks_fts; CREATE TABLE chunks_fts(unexpected TEXT);');
+
+  const indexer = new Indexer(projectId, 3) as any;
+  indexer.embeddingClient = {
+    embedBatch: async (texts: string[]) =>
+      texts.map((text, index) => ({ text, embedding: [0.1, 0.2, 0.3], index })),
+  };
+  indexer.vectorStore = {
+    batchUpsertFiles: async () => {},
+  };
+
+  try {
+    const result = await withMutedErrorLogs(() => indexer.batchIndex(db, [file]));
+
+    assert.deepEqual(result, { success: 0, errors: 1 });
+    assert.deepEqual(getFilesNeedingVectorIndex(db), [filePath]);
+  } finally {
+    closeDb(db);
+    await fs.rm(getProjectDataDir(projectId), { recursive: true, force: true });
+  }
+});
+
 test('batchIndex 同一 outer batch 内应聚合写入 LanceDB 并按子批次确认', async () => {
   const projectId = `batch-grouped-upsert-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const db = initDb(projectId);

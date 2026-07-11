@@ -473,6 +473,7 @@ export class Indexer {
 
         const successFiles = upsertBatch.map(({ path, hash }) => ({ path, hash }));
         const successFtsChunks = upsertBatch.flatMap((file) => file.ftsDocs);
+        let ftsWriteSucceeded = true;
 
         if (successFiles.length > 0 && isChunksFtsInitialized(db)) {
           try {
@@ -481,15 +482,17 @@ export class Indexer {
             batchUpsertChunkFts(db, successFtsChunks);
           } catch (err) {
             const error = err as { message?: string };
-            logger.warn({ error: error.message }, 'FTS 批量更新失败（向量索引已成功）');
+            ftsWriteSucceeded = false;
+            errorFiles.push(...successFiles.map((file) => file.path));
+            logger.warn({ error: error.message }, 'FTS 批量更新失败，保留未确认状态等待 healing');
           }
         }
 
-        if (successFiles.length > 0) {
+        // vector_index_hash 是整个检索索引收敛标记，FTS 未成功时不能提前确认。
+        if (successFiles.length > 0 && ftsWriteSucceeded) {
           batchUpdateVectorIndexHash(db, successFiles);
+          totalSuccess += successFiles.length;
         }
-
-        totalSuccess += successFiles.length;
       }
 
       totalErrors += errorFiles.length;
