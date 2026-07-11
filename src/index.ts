@@ -6,6 +6,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cac from 'cac';
+import { formatIndexSummary } from './cli/indexSummary.js';
 import { DEFAULT_ENV_TEMPLATE } from './config.js';
 import { generateProjectId } from './db/index.js';
 import { type ScanStats, scan } from './scanner/index.js';
@@ -81,8 +82,8 @@ cli
     const rootPath = targetPath ? path.resolve(targetPath) : process.cwd();
     const projectId = generateProjectId(rootPath);
 
-    logger.info(`开始扫描: ${rootPath}`);
-    logger.info(`项目 ID: ${projectId}`);
+    logger.debug(`开始扫描: ${rootPath}`);
+    logger.debug(`项目 ID: ${projectId}`);
     if (options.force) {
       logger.info('强制重新索引: 是');
     }
@@ -113,13 +114,8 @@ cli
         10 * 60 * 1000,
       );
 
-      process.stdout.write('\n');
-
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-      logger.info(`索引完成 (${duration}s)`);
-      logger.info(
-        `总数:${stats.totalFiles} 新增:${stats.added} 修改:${stats.modified} 未变:${stats.unchanged} 删除:${stats.deleted} 跳过:${stats.skipped} 错误:${stats.errors}`,
-      );
+      logger.info(formatIndexSummary(stats, duration));
     } catch (err) {
       const error = err as { message?: string; stack?: string };
       logger.error({ err, stack: error.stack }, `索引失败: ${error.message}`);

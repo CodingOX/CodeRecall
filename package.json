@@ -1,6 +1,6 @@
 {
   "name": "@alistar.max/coderecall",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "AI 代码助手的语义检索引擎 — 混合搜索（向量+FTS）、智能上下文扩展、Token 感知打包，CLI + MCP 双模式",
   "license": "MIT",
   "author": "alistar.max",

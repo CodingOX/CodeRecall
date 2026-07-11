@@ -219,7 +219,7 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     };
     const statsElapsedMs = Date.now() - statsStartedAt;
 
-    logger.info(
+    logger.debug(
       {
         files: filePaths.length,
         initFilterMs: initFilterElapsedMs,
