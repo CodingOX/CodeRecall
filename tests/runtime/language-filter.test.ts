@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { initDb } from '../../src/db/index.js';
 import {
+  codebaseRetrievalSchema,
   normalizeLanguageFilter,
   validateLanguageFilterConflicts,
   validateLanguageWhitelist,
@@ -21,6 +22,42 @@ import {
   searchFilesFts,
 } from '../../src/search/fts.js';
 import { buildLanguageWhereClause } from '../../src/search/SearchService.js';
+
+const BASE_RETRIEVAL_INPUT = {
+  repo_path: '/tmp/project',
+  information_request: 'find authentication flow',
+};
+
+test('MCP 检索 Schema 应拒绝空查询和超长查询', () => {
+  assert.equal(
+    codebaseRetrievalSchema.safeParse({ ...BASE_RETRIEVAL_INPUT, information_request: '' }).success,
+    false,
+  );
+  assert.equal(
+    codebaseRetrievalSchema.safeParse({
+      ...BASE_RETRIEVAL_INPUT,
+      information_request: 'x'.repeat(8193),
+    }).success,
+    false,
+  );
+});
+
+test('MCP 检索 Schema 应限制数组项数和单项长度', () => {
+  assert.equal(
+    codebaseRetrievalSchema.safeParse({
+      ...BASE_RETRIEVAL_INPUT,
+      technical_terms: Array.from({ length: 101 }, () => 'term'),
+    }).success,
+    false,
+  );
+  assert.equal(
+    codebaseRetrievalSchema.safeParse({
+      ...BASE_RETRIEVAL_INPUT,
+      include_globs: ['x'.repeat(513)],
+    }).success,
+    false,
+  );
+});
 
 // ─── 语言分类 ───
 

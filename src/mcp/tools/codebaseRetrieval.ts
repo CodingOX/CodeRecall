@@ -26,6 +26,11 @@ import type { ChunkRecord } from '../../vectorStore/index.js';
 
 // 工具 Schema (暴露给 LLM)
 
+const MAX_QUERY_CHARS = 8192;
+const MAX_FILTER_ITEMS = 100;
+const MAX_FILTER_ITEM_CHARS = 512;
+const boundedFilterItem = z.string().min(1).max(MAX_FILTER_ITEM_CHARS);
+
 export const codebaseRetrievalSchema = z.object({
   repo_path: z
     .string()
@@ -34,11 +39,14 @@ export const codebaseRetrievalSchema = z.object({
     ),
   information_request: z
     .string()
+    .min(1)
+    .max(MAX_QUERY_CHARS)
     .describe(
       "The SEMANTIC GOAL. Describe the functionality, logic, or behavior you are looking for in full natural language sentences. Focus on 'how it works' rather than exact names. (e.g., 'Trace the execution flow of the login process')",
     ),
   technical_terms: z
-    .array(z.string())
+    .array(boundedFilterItem)
+    .max(MAX_FILTER_ITEMS)
     .optional()
     .describe(
       'HARD FILTERS. Precise identifiers to narrow down results. Only use symbols KNOWN to exist to avoid false negatives.',
@@ -59,13 +67,15 @@ export const codebaseRetrievalSchema = z.object({
       "Only for response_mode='raw': number of core code blocks to fetch (1-20, default 5).",
     ),
   include_globs: z
-    .array(z.string())
+    .array(boundedFilterItem)
+    .max(MAX_FILTER_ITEMS)
     .optional()
     .describe(
       "Optional file path include globs. Only matched files are kept (e.g., ['src/main/java/**']).",
     ),
   exclude_globs: z
-    .array(z.string())
+    .array(boundedFilterItem)
+    .max(MAX_FILTER_ITEMS)
     .optional()
     .describe("Optional file path exclude globs. Matched files are removed (e.g., ['zzz/**'])."),
   source_code_only: z
@@ -75,13 +85,15 @@ export const codebaseRetrievalSchema = z.object({
       'Quick filter: exclude docs/config languages (markdown/json/yaml/toml/xml). Can be combined with include_languages (intersection).',
     ),
   include_languages: z
-    .array(z.string())
+    .array(boundedFilterItem)
+    .max(MAX_FILTER_ITEMS)
     .optional()
     .describe(
       "Language whitelist: only include specified languages (e.g., ['typescript', 'python']). When combined with source_code_only, the intersection is used. Unknown languages will cause validation error.",
     ),
   exclude_languages: z
-    .array(z.string())
+    .array(boundedFilterItem)
+    .max(MAX_FILTER_ITEMS)
     .optional()
     .describe(
       "Language blacklist: exclude specified languages (e.g., ['markdown', 'json']). Can be combined with source_code_only. Unknown languages will cause validation error.",
