@@ -98,6 +98,24 @@ test('连续请求应轮询使用不同 key', { concurrency: false }, async () =
   }
 });
 
+test('Rerank HTTP 请求应携带硬超时信号', { concurrency: false }, async () => {
+  const client = new RerankerClient(SINGLE_KEY_CONFIG);
+  const originalFetch = globalThis.fetch;
+  let capturedSignal: AbortSignal | null | undefined;
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedSignal = init?.signal;
+    return makeSuccessResponse();
+  }) as typeof fetch;
+
+  try {
+    await client.rerank('query', ['doc-1', 'doc-2'], { retries: 1 });
+    assert.ok(capturedSignal, 'fetch 必须携带超时信号');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('首次失败后重试应切换 key 并成功', { concurrency: false }, async () => {
   const client = new RerankerClient(MULTI_KEY_CONFIG);
   const originalFetch = globalThis.fetch;

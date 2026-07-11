@@ -14,6 +14,19 @@
 import { type EmbeddingConfig, getEmbeddingConfig } from '../config.js';
 import { logger } from '../utils/logger.js';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * 合并调用方取消与单次 HTTP 硬超时，避免上游半开连接无限占用索引任务。
+ */
+export function createRequestSignal(
+  callerSignal?: AbortSignal,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+}
+
 /** Embedding 请求体 */
 interface EmbeddingRequest {
   model: string;
@@ -965,7 +978,7 @@ export class EmbeddingClient {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
+      signal: createRequestSignal(signal),
     });
 
     const data = (await response.json()) as EmbeddingResponse & EmbeddingErrorResponse;

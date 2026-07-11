@@ -7,6 +7,8 @@
 import { getRerankerConfig, type RerankerConfig } from '../config.js';
 import { logger } from '../utils/logger.js';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /** Rerank 请求体 */
 interface RerankRequest {
   model: string;
@@ -146,6 +148,8 @@ export class RerankerClient {
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify(requestBody),
+          // 单次调用必须有硬上限，否则半开连接会让 CLI/MCP 永久等待。
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
 
         const data = (await response.json()) as RerankResponse & RerankErrorResponse;

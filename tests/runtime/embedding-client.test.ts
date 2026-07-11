@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EmbeddingClient } from '../../src/api/embedding.js';
+import { createRequestSignal, EmbeddingClient } from '../../src/api/embedding.js';
 
 const TEST_CONFIG = {
   apiKey: 'test-api-key',
@@ -45,6 +45,17 @@ function makeErrorResponse(status: number, message: string): Response {
     },
   );
 }
+
+test('请求信号应同时响应调用方取消和硬超时', async () => {
+  const caller = new AbortController();
+  const callerSignal = createRequestSignal(caller.signal, 1000);
+  caller.abort();
+  assert.equal(callerSignal.aborted, true, '调用方取消应立即传播');
+
+  const timeoutSignal = createRequestSignal(undefined, 5);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(timeoutSignal.aborted, true, '硬超时到期后应主动中止请求');
+});
 
 test('遇到 413 时应自动拆分批次并成功返回全部结果', async () => {
   const client = new EmbeddingClient(TEST_CONFIG);
@@ -146,7 +157,6 @@ test('SiliconFlow 风格错误体应透出 message，而不是只报 HTTP 状态
     globalThis.fetch = originalFetch;
   }
 });
-
 
 test('每次 HTTP 请求都应按 key 池轮询 Authorization', async () => {
   const client = new EmbeddingClient({
