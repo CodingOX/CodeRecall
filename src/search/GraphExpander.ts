@@ -378,12 +378,12 @@ export class GraphExpander {
 
       // 4. 解析路径并获取 Chunk
       const perFileLimit = depth === 0 ? importFilesPerSeed : Math.min(importFilesPerSeed, 2);
-      let importCount = 0;
-      // 缓存已处理的 import，避免重复处理
+      const targetPaths: string[] = [];
       const processedImports = new Set<string>();
+      const processedTargets = new Set<string>();
 
       for (const importStr of importStrs) {
-        if (importCount >= perFileLimit) break;
+        if (targetPaths.length >= perFileLimit) break;
         if (processedImports.has(importStr)) continue;
         processedImports.add(importStr);
 
@@ -391,9 +391,18 @@ export class GraphExpander {
         // allFilePaths 在 expand() 入口处通过 loadFileIndex() 确保已加载
         const targetPath = resolver.resolve(importStr, filePath, this.allFilePaths as Set<string>);
 
-        if (!targetPath || targetPath === filePath) continue; // 排除引用自己
+        if (!targetPath || targetPath === filePath || processedTargets.has(targetPath)) continue;
+        processedTargets.add(targetPath);
+        targetPaths.push(targetPath);
+      }
 
-        const importChunks = await this.vectorStore?.getFileChunks(targetPath);
+      // 同一源文件的 import 统一读取，避免对 LanceDB 逐目标串行往返。
+      if (targetPaths.length === 0) continue;
+      const chunksByTarget = await this.vectorStore?.getFilesChunks(targetPaths);
+      if (!chunksByTarget) continue;
+
+      for (const targetPath of targetPaths) {
+        const importChunks = chunksByTarget.get(targetPath);
         if (!importChunks || importChunks.length === 0) continue;
 
         const selectedChunks = this.selectImportChunks(
@@ -415,8 +424,6 @@ export class GraphExpander {
             record: { ...chunk, _distance: 0 },
           });
         }
-
-        importCount++;
 
         if (depth === 0 && this.isBarrelFile(targetPath)) {
           if (stats) stats.importDepth1Count++;

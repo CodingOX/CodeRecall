@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { GraphExpander } from '../../src/search/GraphExpander.js';
 import { DEFAULT_CONFIG } from '../../src/search/config.js';
+import { GraphExpander } from '../../src/search/GraphExpander.js';
 import type { ScoredChunk } from '../../src/search/types.js';
 
 function buildSeed(filePath: string, chunkIndex: number, score = 0.9): ScoredChunk {
@@ -170,6 +170,52 @@ test('importFilesPerSeed=0 时不应触发跨文件扩展结果', async () => {
 
   assert.deepEqual(result, []);
   assert.equal(getFileChunksCalled, 0, 'per-file limit 为 0 时不应读取导入文件 chunks');
+});
+
+test('多个 import 目标应通过单次批量查询读取 chunks', async () => {
+  const expander = new GraphExpander('graph-import-batch', {
+    ...DEFAULT_CONFIG,
+    importFilesPerSeed: 3,
+    chunksPerImportFile: 1,
+  });
+
+  (expander as any).resolvers = [
+    {
+      supports: () => true,
+      extract: () => ['./dep-a', './dep-b'],
+      resolve: (value: string) => `src/${value.slice(2)}.ts`,
+    },
+  ];
+  (expander as any).db = {
+    prepare: () => ({ get: () => ({ content: 'imports' }) }),
+  };
+  (expander as any).allFilePaths = new Set(['src/a.ts', 'src/dep-a.ts', 'src/dep-b.ts']);
+
+  let batchCalls = 0;
+  let singleCalls = 0;
+  (expander as any).vectorStore = {
+    getFilesChunks: async (paths: string[]) => {
+      batchCalls++;
+      return new Map(paths.map((filePath) => [filePath, [buildSeed(filePath, 0).record]]));
+    },
+    getFileChunks: async () => {
+      singleCalls++;
+      return [];
+    },
+  };
+
+  const result = await (expander as any).expandImports(
+    [buildSeed('src/a.ts', 0)],
+    new Set<string>(),
+    new Set<string>(['dep']),
+  );
+
+  assert.equal(batchCalls, 1);
+  assert.equal(singleCalls, 0);
+  assert.deepEqual(result.map((chunk: ScoredChunk) => chunk.filePath).sort(), [
+    'src/dep-a.ts',
+    'src/dep-b.ts',
+  ]);
 });
 
 test('GraphExpander.close 应释放内部引用', async () => {
