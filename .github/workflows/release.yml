@@ -2,48 +2,65 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 0.1.5) (must have tag v0.1.5)'
-        required: true
+        description: '可选。指定版本（如 0.2.0）。留空则从最新 main 自动递增 patch'
+        required: false
         type: string
 
 permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   build-and-publish:
     name: Build and Publish
+    # 版本号提交若被个人令牌再次推上 main，不要连跳两个 patch
+    if: github.event_name != 'push' || github.ref_type == 'tag' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code (tag on dispatch)
+      - name: Checkout latest code
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', github.event.inputs.version) || github.ref }}
+          ref: ${{ github.ref_type == 'tag' && github.ref || 'main' }}
 
       - name: Resolve release version
         id: rel
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT="${{ github.event.inputs.version }}"
-            VER="${INPUT#v}"
-            echo "tag=v$VER" >> "$GITHUB_OUTPUT"
-            echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          CURRENT="$(node -p "require('./package.json').version")"
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          elif [ -n "${INPUT_VERSION}" ]; then
+            VER="${INPUT_VERSION#v}"
+            node scripts/bump-package-versions.js "$VER" >/dev/null
+          elif git rev-parse -q --verify "refs/tags/v${CURRENT}" >/dev/null; then
+            VER="$(node scripts/bump-package-versions.js)"
           else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "ver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            VER="$CURRENT"
           fi
+
+          echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+          echo "ver=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 10
+          version: 11
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -171,6 +188,28 @@ jobs:
           publish_if_needed "@alistar.max/coderecall" "."
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit version bump and push tag
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+          VER: ${{ steps.rel.outputs.ver }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet; then
+            git add -- package.json packages/lang-all/package.json packages/lang-c/package.json packages/lang-cpp/package.json packages/lang-csharp/package.json packages/lang-java/package.json packages/lang-kotlin/package.json packages/lang-php/package.json packages/lang-ruby/package.json packages/lang-rust/package.json packages/lang-swift/package.json packages/lang-typescript/package.json
+            git commit -m "chore(release): bump packages to ${VER}"
+            git push origin HEAD:main
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Create GitHub Release
         if: startsWith(steps.rel.outputs.tag, 'v')
