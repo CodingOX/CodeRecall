@@ -33,6 +33,7 @@ coderecall index [path]    # 索引代码库（-f 强制重建）
 coderecall search          # 本地检索
 coderecall mcp             # 启动 MCP 服务端
 coderecall doctor .        # 索引一致性审计（--repair 自动修复）
+coderecall model list      # 查看内置本地 Embedding 模型
 coderecall feedback .      # 隐式反馈闭环摘要（--days 7 --top 10）
 coderecall tune <dataset>  # 离线自动调参（--target mrr --k 1,3,5）
 ```
@@ -149,3 +150,13 @@ scanner/
 pnpm build
 pnpm link --global
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for this repo. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
