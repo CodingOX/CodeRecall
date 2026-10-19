@@ -57,19 +57,15 @@ jobs:
           TMP_DIR="$(mktemp -d)"
           cd "$TMP_DIR"
           npm init -y >/dev/null
-          node - <<'NODE'
-          const fs = require('fs');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          pkg.pnpm = {
-            onlyBuiltDependencies: [
-              'tree-sitter',
-              'better-sqlite3',
-              'tree-sitter-go',
-              'tree-sitter-javascript',
-              'tree-sitter-python',
-            ],
-          };
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          NODE
+          # pnpm 11 不读 package.json 的 pnpm 字段，未放行的安装脚本会直接失败
+          cat > pnpm-workspace.yaml <<'EOF'
+          allowBuilds:
+            "@alistar.max/coderecall": true
+            better-sqlite3: true
+            tree-sitter: true
+            tree-sitter-go: true
+            tree-sitter-javascript: true
+            tree-sitter-python: true
+          EOF
           pnpm add "$GITHUB_WORKSPACE/${{ steps.pack.outputs.tgz }}"
           pnpm exec coderecall --version
