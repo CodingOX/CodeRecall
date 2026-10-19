@@ -9,7 +9,7 @@ on:
 jobs:
   smoke-install:
     name: Node 22 · ${{ matrix.pm }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +62,8 @@ jobs:
           allowBuilds:
             "@alistar.max/coderecall": true
             better-sqlite3: true
+            onnxruntime-node: true
+            protobufjs: true
             tree-sitter: true
             tree-sitter-go: true
             tree-sitter-javascript: true
