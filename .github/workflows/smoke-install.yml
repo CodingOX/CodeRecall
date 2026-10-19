@@ -57,17 +57,10 @@ jobs:
           TMP_DIR="$(mktemp -d)"
           cd "$TMP_DIR"
           npm init -y >/dev/null
-          # pnpm 11 不读 package.json 的 pnpm 字段，未放行的安装脚本会直接失败
+          # pnpm 11 对 file: 依赖不信任包名白名单（版本不是 semver），
+          # 本地 tarball 的 preinstall 必须整单放行，否则 ERR_PNPM_IGNORED_BUILDS。
           cat > pnpm-workspace.yaml <<'EOF'
-          allowBuilds:
-            "@alistar.max/coderecall": true
-            better-sqlite3: true
-            onnxruntime-node: true
-            protobufjs: true
-            tree-sitter: true
-            tree-sitter-go: true
-            tree-sitter-javascript: true
-            tree-sitter-python: true
+          dangerouslyAllowAllBuilds: true
           EOF
           pnpm add "$GITHUB_WORKSPACE/${{ steps.pack.outputs.tgz }}"
           pnpm exec coderecall --version
