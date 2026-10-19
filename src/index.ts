@@ -76,6 +76,22 @@ cli.command('init', '初始化 CodeRecall 配置').action(async () => {
 });
 
 cli
+  .command('model [action] [model]', '管理本地 Embedding 模型（install/list/use/remove）')
+  .option('--yes', '删除模型时确认执行')
+  .action(
+    async (action: string | undefined, model: string | undefined, options: { yes?: boolean }) => {
+      try {
+        const { runModelCommand } = await import('./cli/model.js');
+        await runModelCommand(action, model, options);
+      } catch (err) {
+        const error = err as { message?: string; stack?: string };
+        logger.error({ err, stack: error.stack }, `模型命令失败: ${error.message}`);
+        process.exit(1);
+      }
+    },
+  );
+
+cli
   .command('index [path]', '扫描代码库并建立索引')
   .option('-f, --force', '强制重新索引')
   .action(async (targetPath: string | undefined, options: { force?: boolean }) => {

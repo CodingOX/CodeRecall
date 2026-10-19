@@ -9,7 +9,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { type EmbeddingClient, getEmbeddingClient } from '../api/embedding.js';
+import { type EmbeddingProvider, getEmbeddingClient } from '../api/embedding.js';
 import type { ProcessedChunk } from '../chunking/types.js';
 import { batchUpdateVectorIndexHash, clearVectorIndexHash } from '../db/index.js';
 import type { ProcessResult } from '../scanner/processor.js';
@@ -173,7 +173,7 @@ export function buildChunkFtsDoc(input: ChunkFtsDocInput): ChunkFtsDoc {
 export class Indexer {
   private projectId: string;
   private vectorStore: VectorStoreInstance | null = null;
-  private embeddingClient: EmbeddingClient | null = null;
+  private embeddingClient: EmbeddingProvider | null = null;
   private vectorDim: number;
 
   constructor(projectId: string, vectorDim = 1024) {
@@ -193,7 +193,7 @@ export class Indexer {
    *
    * 这样无 chunk 文件的收敛路径不会因为没有真实 embedding 配置而提前失败。
    */
-  private getOrCreateEmbeddingClient(): EmbeddingClient {
+  private getOrCreateEmbeddingClient(): EmbeddingProvider {
     if (!this.embeddingClient) {
       this.embeddingClient = getEmbeddingClient();
     }

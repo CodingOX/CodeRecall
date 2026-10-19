@@ -93,3 +93,23 @@ export function getDefaultEnvFilePath(): string {
 export function getPreferredHomeEnvFilePath(): string {
   return path.join(getPreferredHomeConfigBaseDir(), DEFAULT_ENV_NAME);
 }
+
+/**
+ * 与 config 加载顺序一致的 .env 候选路径。
+ * 开发环境优先当前目录，否则优先用户配置目录。
+ */
+export function listEnvFileCandidates(): string[] {
+  const isDev = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+  const preferredHomeEnvPath = getPreferredHomeEnvFilePath();
+  const fallbackEnvPath = getDefaultEnvFilePath();
+  const candidates = isDev
+    ? [path.join(process.cwd(), '.env'), preferredHomeEnvPath, fallbackEnvPath]
+    : [preferredHomeEnvPath, fallbackEnvPath];
+  return [...new Set(candidates)];
+}
+
+/** 当前会生效的 .env；都不存在时返回首选写入位置。 */
+export function resolveEnvFilePath(): string {
+  const candidates = listEnvFileCandidates();
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}

@@ -25,6 +25,7 @@
 - **上下文扩展**：支持同文件邻居、面包屑补全、导入文件扩展，减少只命中孤立片段的问题。
 - **Token 感知打包**：合并相邻片段，控制上下文预算，避免输出过散或过长。
 - **CLI + MCP 双入口**：既能作为命令行工具独立检索，也能作为 MCP Server 接入 Claude、Codex 等客户端。
+- **本地 Embedding**：可选用本机 CPU 模型做向量化。默认仍走远程 API；切换模型后，下一次索引会按向量空间自动重建。
 
 ## 📦 安装
 
@@ -93,7 +94,17 @@ RERANK_BASE_URL=https://api.siliconflow.cn/v1/rerank
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
-其它可选变量（向量维度、索引/限流档位、包含/忽略模式、多 Key 轮转、旧变量兼容等）详见 `docs/developer/developer-guide.md` 的"环境变量配置参考"小节。
+其它可选变量（向量维度、本地模型、索引/限流档位、包含/忽略模式、多 Key 轮转、旧变量兼容等）详见 `docs/developer/developer-guide.md` 的"环境变量配置参考"小节。
+
+本地向量化走 CPU，不替换现有远程配置。在 `~/.coderecall/.env` 里设置 `EMBEDDINGS_PROVIDER=local` 后执行：
+
+```bash
+coderecall model list
+coderecall model install qwen3-embedding-0.6b
+coderecall model use qwen3-embedding-0.6b
+```
+
+可选模型还有 `embeddinggemma-300m` 和 `jina-embeddings-v2-base-code`。Reranker 仍然使用远程 API。切换向量空间后，下一次索引会自动重建。
 
 ## 📖 使用方法
 
@@ -170,7 +181,20 @@ coderecall init
 
 该命令会创建 `~/.coderecall/.env`。如果文件已存在，不会覆盖现有配置。
 
-### 3) 索引代码库
+### 3) 本地 Embedding 模型（可选）
+
+默认仍使用远程 Embedding API。要改用本机 CPU 模型：
+
+```bash
+coderecall model list
+coderecall model install qwen3-embedding-0.6b
+coderecall model use qwen3-embedding-0.6b
+coderecall model remove qwen3-embedding-0.6b --yes
+```
+
+可选模型还有 `embeddinggemma-300m` 和 `jina-embeddings-v2-base-code`。`model use` 会把 `EMBEDDINGS_PROVIDER=local` 写入 `~/.coderecall/.env`。Reranker 仍然走远程 API。换模型后不会立刻改索引，下一次 `index` 或搜索触发的自动索引会清掉旧向量并重建。
+
+### 4) 索引代码库
 
 ```bash
 # 索引当前目录
@@ -185,7 +209,7 @@ coderecall index /path/to/your/project --force
 
 首次接入一个项目时，可直接执行 `coderecall search`，入口会自动触发首次全量索引。如果你想在终端里直观观察 Embedding 进度、429 限流和配置错误，也可以先手动跑一次 `--force`。
 
-### 4) 本地搜索
+### 5) 本地搜索
 
 ```bash
 coderecall search \
@@ -195,7 +219,7 @@ coderecall search \
 
 `--information-request` 是必填的语义意图；`--technical-terms` 是可选的精确术语（逗号分隔）；`--repo-path` 可指定目标仓库（默认当前目录）。
 
-### 5) 索引一致性检查
+### 6) 索引一致性检查
 
 ```bash
 coderecall doctor /path/to/your/project
@@ -288,7 +312,7 @@ C# Import 解析支持 `using`、`using static`、`global using`、别名导入�
 
 ## ⚙️ 配置参考
 
-仅需填写 Embedding / Reranker 各 3 个必需变量（见"初始化配置"小节）。其它可选变量、旧变量兼容、高级限流覆盖等详见 `docs/developer/developer-guide.md` 的"环境变量配置参考"小节。
+默认仍需填写 Embedding / Reranker 各 3 个必需变量（见"初始化配置"小节）。改用本地 Embedding 时，Embedding API 可以不填，Reranker 仍然必需。其它可选变量、旧变量兼容、高级限流覆盖等详见 `docs/developer/developer-guide.md` 的"环境变量配置参考"小节。
 
 ## 🧱 技术文档
 

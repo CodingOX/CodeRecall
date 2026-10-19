@@ -108,7 +108,7 @@ bash scripts/publish-plugins.sh --version <x.y.z>
 |--------|------|
 | `EMBEDDINGS_API_KEYS` | Embedding API Key，逗号分隔多 Key 轮转 |
 | `EMBEDDINGS_BASE_URL` | Embedding API 地址 |
-| `EMBEDDINGS_MODEL` | Embedding 模型名称 |
+| `EMBEDDINGS_MODEL` | Embedding 模型名称。`local` 时必须是内置模型 ID |
 | `RERANK_API_KEYS` | Reranker API Key，逗号分隔多 Key 轮转 |
 | `RERANK_BASE_URL` | Reranker API 地址 |
 | `RERANK_MODEL` | Reranker 模型名称 |
@@ -117,7 +117,9 @@ bash scripts/publish-plugins.sh --version <x.y.z>
 
 | 变量名 | 默认值 | 描述 |
 |--------|--------|------|
-| `EMBEDDINGS_DIMENSIONS` | 1024 | 向量维度（与模型匹配） |
+| `EMBEDDINGS_DIMENSIONS` | 1024 | 向量维度。远程模型按这里读取；本地模型以模型目录为准 |
+| `EMBEDDINGS_PROVIDER` | remote | `remote` 走 Embedding API；`local` 用本机 CPU 模型。本地模型先执行 `coderecall model install` |
+| `HF_ENDPOINT` | https://huggingface.co/ | 本地模型下载源，可改成镜像 |
 | `CODE_RECALL_PROFILE` | balanced | 索引分片档位：`quality` / `balanced` / `performance` |
 | `EMBEDDINGS_RATE_PROFILE` | balanced | Embedding 限流档位：`safe` / `balanced` / `fast` |
 | `RERANK_TOP_N` | 20 | Rerank 返回数量 |

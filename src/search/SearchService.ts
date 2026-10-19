@@ -10,7 +10,7 @@
 
 import type Database from 'better-sqlite3';
 import { getRerankerClient } from '../api/reranker.js';
-import { getEmbeddingConfig } from '../config.js';
+import { getEmbeddingDimensions } from '../config.js';
 import { initDb } from '../db/index.js';
 import { closeIndexer, getIndexer, type Indexer } from '../indexer/index.js';
 import { getLanguage } from '../scanner/language.js';
@@ -141,9 +141,9 @@ export class SearchService {
   }
 
   async init(): Promise<void> {
-    const embeddingConfig = getEmbeddingConfig();
-    this.indexer = await getIndexer(this.projectId, embeddingConfig.dimensions);
-    this.vectorStore = await getVectorStore(this.projectId, embeddingConfig.dimensions);
+    const dimensions = getEmbeddingDimensions();
+    this.indexer = await getIndexer(this.projectId, dimensions);
+    this.vectorStore = await getVectorStore(this.projectId, dimensions);
     this.db = initDb(this.projectId);
   }
 

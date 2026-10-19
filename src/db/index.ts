@@ -323,6 +323,7 @@ export function clear(db: Database.Database): void {
 // ===========================================
 
 const METADATA_KEY_EMBEDDING_DIMENSIONS = 'embedding_dimensions';
+const METADATA_KEY_EMBEDDING_SPACE = 'embedding_space_id';
 
 /**
  * 获取 metadata 值
@@ -361,4 +362,14 @@ export function getStoredEmbeddingDimensions(db: Database.Database): number | nu
  */
 export function setStoredEmbeddingDimensions(db: Database.Database, dimensions: number): void {
   setMetadata(db, METADATA_KEY_EMBEDDING_DIMENSIONS, String(dimensions));
+}
+
+/** 获取已索引的向量空间标识。旧索引没有该字段时返回 null。 */
+export function getStoredEmbeddingSpace(db: Database.Database): string | null {
+  return getMetadata(db, METADATA_KEY_EMBEDDING_SPACE);
+}
+
+/** 记录当前向量空间。空间变化后扫描会强制重建。 */
+export function setStoredEmbeddingSpace(db: Database.Database, spaceId: string): void {
+  setMetadata(db, METADATA_KEY_EMBEDDING_SPACE, spaceId);
 }

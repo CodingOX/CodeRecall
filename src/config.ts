@@ -11,9 +11,13 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import dotenv from 'dotenv';
-import { getDefaultEnvFilePath, getPreferredHomeEnvFilePath } from './utils/paths.js';
+import {
+  DEFAULT_LOCAL_MODEL_ID,
+  getLocalModelDefinition,
+  isLocalModelId,
+} from './models/catalog.js';
+import { listEnvFileCandidates } from './utils/paths.js';
 
 // 环境变量加载
 
@@ -24,7 +28,11 @@ export const isMcpMode = process.argv[2] === 'mcp';
 
 export const DEFAULT_ENV_TEMPLATE = `# CodeRecall 示例环境变量配置文件
 
-# Embedding API 配置（必需）
+# Embedding 来源：remote（默认，走 API）或 local（本机 CPU 模型）
+# 本地模型需要先安装：coderecall model install qwen3-embedding-0.6b
+# EMBEDDINGS_PROVIDER=remote
+
+# Embedding API 配置（remote 时必需）
 # 推荐使用 KEYS（逗号分隔多 key），方便后期扩展限速轮转
 EMBEDDINGS_API_KEYS=your-api-key-here
 # 单 key 兼容写法（同时配置时 KEYS 优先）
@@ -64,22 +72,8 @@ RERANK_TOP_N=20
 `;
 
 function loadEnv(): void {
-  const preferredHomeEnvPath = getPreferredHomeEnvFilePath();
-  const fallbackEnvPath = getDefaultEnvFilePath();
-  // 可能的 .env 文件路径（按优先级排序）
-  const candidates = isDev
-    ? [
-        path.join(process.cwd(), '.env'), // 1. 当前目录（开发用）
-        preferredHomeEnvPath, // 2. 用户配置目录（首选）
-        fallbackEnvPath, // 3. 受限环境回退目录
-      ]
-    : [
-        preferredHomeEnvPath, // 生产环境优先用户真实 HOME 配置
-        fallbackEnvPath, // 受限环境回退目录
-      ];
-
   // 找到第一个存在的文件
-  const envPath = candidates.find((p) => fs.existsSync(p));
+  const envPath = listEnvFileCandidates().find((p) => fs.existsSync(p));
 
   if (envPath) {
     const result = dotenv.config({ path: envPath, quiet: true });
@@ -118,6 +112,24 @@ export interface EmbeddingConfig {
   maxRpm: number;
   /** TPM 上限（令牌桶主动限流，0 表示不使用） */
   maxTpm: number;
+}
+
+export type EmbeddingProviderKind = 'local' | 'remote';
+
+/** 向量空间标识。模型、维度或文档侧输入规则变化时必须重建索引。 */
+export interface EmbeddingSpace {
+  provider: EmbeddingProviderKind;
+  model: string;
+  dimensions: number;
+  spaceId: string;
+}
+
+export interface LocalEmbeddingConfig {
+  provider: 'local';
+  model: string;
+  dimensions: number;
+  maxContextTokens: number;
+  spaceId: string;
 }
 
 export interface RerankerConfig {
@@ -249,6 +261,17 @@ export function getChunkingConfig(): ChunkingProfileConfig {
  * @returns 检查结果，包含是否有效和缺失的变量列表
  */
 export function checkEmbeddingEnv(): EnvCheckResult {
+  if (getEmbeddingProvider() === 'local') {
+    const model = getConfiguredEmbeddingModel();
+    if (model && !isLocalModelId(model)) {
+      return {
+        isValid: false,
+        missingVars: [`EMBEDDINGS_MODEL（必须是内置本地模型，当前为 ${model}）`],
+      };
+    }
+    return { isValid: true, missingVars: [] };
+  }
+
   const missingVars: string[] = [];
   const apiKeys = resolveApiKeys('EMBEDDINGS_API_KEY', 'EMBEDDINGS_API_KEYS');
 
@@ -292,8 +315,73 @@ export function checkRerankerEnv(): EnvCheckResult {
   };
 }
 
+/** 未设置时保持远程，避免把已有 API 配置切到本地模型。 */
+export function getEmbeddingProvider(): EmbeddingProviderKind {
+  const raw = process.env.EMBEDDINGS_PROVIDER?.trim().toLowerCase();
+  if (!raw) return 'remote';
+  if (raw === 'local' || raw === 'remote') return raw;
+  throw new Error(`未知的 EMBEDDINGS_PROVIDER: ${raw}。可选值: local, remote`);
+}
+
+export function getConfiguredEmbeddingModel(): string | undefined {
+  const model = process.env.EMBEDDINGS_MODEL?.trim();
+  return model ? model : undefined;
+}
+
+export function getHuggingFaceEndpoint(): string {
+  const configured = process.env.HF_ENDPOINT?.trim();
+  return configured ? configured : 'https://huggingface.co/';
+}
+
+export function getEmbeddingSpace(): EmbeddingSpace {
+  if (getEmbeddingProvider() === 'local') {
+    const requested = getConfiguredEmbeddingModel() ?? DEFAULT_LOCAL_MODEL_ID;
+    const definition = getLocalModelDefinition(requested);
+    return {
+      provider: 'local',
+      model: definition.id,
+      dimensions: definition.dimensions,
+      spaceId: [
+        'local',
+        definition.id,
+        definition.revision,
+        definition.dtype,
+        definition.dimensions,
+        definition.documentInputSpaceVersion,
+      ].join(':'),
+    };
+  }
+
+  const config = getEmbeddingConfig();
+  return {
+    provider: 'remote',
+    model: config.model,
+    dimensions: config.dimensions,
+    spaceId: `remote:${config.model}:${config.baseUrl}:${config.dimensions}`,
+  };
+}
+
+export function getEmbeddingDimensions(): number {
+  return getEmbeddingSpace().dimensions;
+}
+
+export function getLocalEmbeddingConfig(): LocalEmbeddingConfig {
+  const space = getEmbeddingSpace();
+  if (space.provider !== 'local') {
+    throw new Error('当前 EMBEDDINGS_PROVIDER 不是 local');
+  }
+  const definition = getLocalModelDefinition(space.model);
+  return {
+    provider: 'local',
+    model: definition.id,
+    dimensions: definition.dimensions,
+    maxContextTokens: definition.maxContextTokens,
+    spaceId: space.spaceId,
+  };
+}
+
 /**
- * 获取 Embedding 配置
+ * 获取远程 Embedding 配置
  * @throws 如果必需的配置项缺失
  */
 export function getEmbeddingConfig(): EmbeddingConfig {

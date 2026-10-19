@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { resetEmbeddingClient, resetRateLimitController } from '../api/embedding.js';
-import { getEmbeddingConfig } from '../config.js';
+import { getEmbeddingSpace } from '../config.js';
 import {
   batchDelete,
   batchUpdateMtime,
@@ -13,8 +13,10 @@ import {
   getAllPaths,
   getFilesNeedingVectorIndex,
   getStoredEmbeddingDimensions,
+  getStoredEmbeddingSpace,
   initDb,
   setStoredEmbeddingDimensions,
+  setStoredEmbeddingSpace,
 } from '../db/index.js';
 import { closeAllIndexers, getIndexer } from '../indexer/index.js';
 import { logger } from '../utils/logger.js';
@@ -83,19 +85,33 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     // 检查 embedding dimensions 是否变化
     let forceReindex = options.force ?? false;
     if (options.vectorIndex !== false) {
-      const currentDimensions = getEmbeddingConfig().dimensions;
+      const currentSpace = getEmbeddingSpace();
       const storedDimensions = getStoredEmbeddingDimensions(db);
+      const storedSpace = getStoredEmbeddingSpace(db);
+      const dimensionsChanged =
+        storedDimensions !== null && storedDimensions !== currentSpace.dimensions;
+      // 旧索引没有 space id。远程且维度未变时直接补记，不重建。
+      // 切到本地模型时即使维度相同也要重建，避免把 bge-m3 向量当成新模型的向量。
+      const spaceChanged =
+        storedSpace === null
+          ? currentSpace.provider === 'local' && storedDimensions !== null
+          : storedSpace !== currentSpace.spaceId;
 
-      if (storedDimensions !== null && storedDimensions !== currentDimensions) {
+      if (dimensionsChanged || spaceChanged) {
         logger.warn(
-          { stored: storedDimensions, current: currentDimensions },
-          'Embedding 维度变化，强制重新索引',
+          {
+            storedDimensions,
+            currentDimensions: currentSpace.dimensions,
+            storedSpace,
+            currentSpace: currentSpace.spaceId,
+          },
+          'Embedding 向量空间变化，强制重新索引',
         );
         forceReindex = true;
       }
 
-      // 更新存储的维度值
-      setStoredEmbeddingDimensions(db, currentDimensions);
+      setStoredEmbeddingDimensions(db, currentSpace.dimensions);
+      setStoredEmbeddingSpace(db, currentSpace.spaceId);
     }
 
     // 如果强制重新索引，清空数据库和向量索引
@@ -107,8 +123,8 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
 
       // 清空向量索引
       if (options.vectorIndex !== false) {
-        const embeddingConfig = getEmbeddingConfig();
-        const indexer = await getIndexer(projectId, embeddingConfig.dimensions);
+        const embeddingSpace = getEmbeddingSpace();
+        const indexer = await getIndexer(projectId, embeddingSpace.dimensions);
         const vectorClearStartedAt = Date.now();
         await indexer.clear();
         vectorClearElapsedMs = Date.now() - vectorClearStartedAt;
@@ -244,8 +260,8 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
       resetEmbeddingClient();
       resetRateLimitController();
 
-      const embeddingConfig = getEmbeddingConfig();
-      const indexer = await getIndexer(projectId, embeddingConfig.dimensions);
+      const embeddingSpace = getEmbeddingSpace();
+      const indexer = await getIndexer(projectId, embeddingSpace.dimensions);
       indexer.resetEmbeddingClient();
 
       // 收集需要向量索引的文件：

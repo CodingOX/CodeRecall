@@ -8,7 +8,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { getEmbeddingConfig } from '../config.js';
+import { getEmbeddingDimensions } from '../config.js';
 import { initDb } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { type ChunkRecord, getVectorStore, type VectorStore } from '../vectorStore/index.js';
@@ -52,8 +52,7 @@ export class GraphExpander {
   }
 
   async init(): Promise<void> {
-    const embeddingConfig = getEmbeddingConfig();
-    this.vectorStore = await getVectorStore(this.projectId, embeddingConfig.dimensions);
+    this.vectorStore = await getVectorStore(this.projectId, getEmbeddingDimensions());
     this.db = initDb(this.projectId);
   }
 

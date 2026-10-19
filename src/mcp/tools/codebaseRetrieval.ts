@@ -741,9 +741,9 @@ async function collectRawCodeBlocks(
   try {
     const contentMap = loadFileContents(db, filePaths);
 
-    const { getEmbeddingConfig } = await import('../../config.js');
+    const { getEmbeddingDimensions } = await import('../../config.js');
     const { getVectorStore } = await import('../../vectorStore/index.js');
-    const vectorStore = await getVectorStore(projectId, getEmbeddingConfig().dimensions);
+    const vectorStore = await getVectorStore(projectId, getEmbeddingDimensions());
     const chunksByFile = await vectorStore.getFilesChunks(filePaths);
 
     const rawBlocks: RawCodeBlock[] = [];

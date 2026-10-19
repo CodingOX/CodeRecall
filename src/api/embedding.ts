@@ -11,8 +11,14 @@
  * - 连续成功 N 次后才提升并发数
  */
 
-import { type EmbeddingConfig, getEmbeddingConfig } from '../config.js';
+import {
+  type EmbeddingConfig,
+  getEmbeddingConfig,
+  getEmbeddingProvider,
+  getLocalEmbeddingConfig,
+} from '../config.js';
 import { logger } from '../utils/logger.js';
+import { LocalEmbeddingClient } from './localEmbedding.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -69,6 +75,17 @@ export interface EmbeddingResult {
   text: string;
   embedding: number[];
   index: number;
+}
+
+/** 远程客户端和本地模型共用的向量化入口。 */
+export interface EmbeddingProvider {
+  embed(text: string): Promise<number[]>;
+  embedBatch(
+    texts: string[],
+    batchSize?: number,
+    onProgress?: (completed: number, total: number) => void,
+  ): Promise<EmbeddingResult[]>;
+  dispose?(): Promise<void>;
 }
 
 /**
@@ -1031,13 +1048,17 @@ export class EmbeddingClient {
 }
 
 /**
- * 创建默认的 Embedding 客户端实例
+ * 创建默认的 Embedding 客户端实例。
+ * EMBEDDINGS_PROVIDER=local 时走本机 CPU 模型，否则保持远程 API。
  */
-let defaultClient: EmbeddingClient | null = null;
+let defaultClient: EmbeddingProvider | null = null;
 
-export function getEmbeddingClient(): EmbeddingClient {
+export function getEmbeddingClient(): EmbeddingProvider {
   if (!defaultClient) {
-    defaultClient = new EmbeddingClient();
+    defaultClient =
+      getEmbeddingProvider() === 'local'
+        ? new LocalEmbeddingClient(getLocalEmbeddingConfig())
+        : new EmbeddingClient();
   }
   return defaultClient;
 }
@@ -1048,7 +1069,9 @@ export function getEmbeddingClient(): EmbeddingClient {
  * 用于在配置热更新后强制重新读取最新的环境变量快照。
  */
 export function resetEmbeddingClient(): void {
+  const current = defaultClient;
   defaultClient = null;
+  void current?.dispose?.();
 }
 
 function sleep(ms: number): Promise<void> {

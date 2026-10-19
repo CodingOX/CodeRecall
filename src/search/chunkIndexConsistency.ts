@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { getEmbeddingConfig } from '../config.js';
+import { getEmbeddingDimensions } from '../config.js';
 import { initDb } from '../db/index.js';
 import { getVectorStore } from '../vectorStore/index.js';
 import { batchDeleteChunkFtsByIds, getAllChunkFtsIds, initChunksFts } from './fts.js';
@@ -36,8 +36,7 @@ export function buildChunkIndexConsistencyReport(
 export async function inspectChunkIndexConsistency(
   projectId: string,
 ): Promise<ChunkIndexConsistencyReport> {
-  const embeddingConfig = getEmbeddingConfig();
-  const vectorStore = await getVectorStore(projectId, embeddingConfig.dimensions);
+  const vectorStore = await getVectorStore(projectId, getEmbeddingDimensions());
   const db = initDb(projectId);
 
   try {
