@@ -30,7 +30,7 @@
 
 ### 环境要求
 
-- Node.js >= 20 且 < 24（推荐 Node.js 22 LTS，不支持 Node 24）
+- Node.js >= 20 且 < 25（推荐 Node.js 22 LTS，Node 24 可用）
 - npm >= 10
 
 ### 安装主包

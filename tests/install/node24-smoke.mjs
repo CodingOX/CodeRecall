@@ -3,12 +3,14 @@ import { spawnSync } from 'node:child_process';
 
 const result = spawnSync('node', ['scripts/check-node-version.js'], {
   encoding: 'utf8',
+  env: {
+    ...process.env,
+    CODERECALL_NODE_VERSION_OVERRIDE: 'v24.15.0',
+  },
 });
 
-assert.notEqual(
+assert.equal(
   result.status,
   0,
-  `Node24 安装守卫未生效\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+  `Node 24 安装守卫未放行\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
 );
-
-assert.match(result.stderr, /Node 24/);

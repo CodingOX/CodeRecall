@@ -2,8 +2,8 @@
 
 /**
  * 安装前硬守卫：
- * - tree-sitter@0.25 在当前发布链路下无法稳定支持 Node 24 安装期编译
- * - 在进入 node-gyp 失败之前，直接给出明确错误与建议版本
+ * - Node 20–24 可以安装。tree-sitter@0.25.1 起自带 N-API 预编译，Node 24 不再本地编译。
+ * - Node 25 及以上尚未在本仓库验证，进入原生模块安装前直接拒绝。
  */
 
 const rawVersion =
@@ -17,13 +17,12 @@ if (!Number.isFinite(major)) {
   process.exit(1);
 }
 
-if (major >= 24) {
+if (major < 20 || major >= 25) {
   console.error(
     [
-      '[CodeRecall] 当前暂不支持 Node 24 及以上版本安装。',
+      '[CodeRecall] 当前只支持 Node.js 20 到 24。',
       `检测到版本：${rawVersion}`,
-      '原因：tree-sitter 原生模块在该安装链路下会触发本地编译失败。',
-      '建议：请切换到 Node 22 LTS 后重新安装。',
+      '建议：请切换到 Node 22 LTS 或 Node 24 后重新安装。',
     ].join('\n'),
   );
   process.exit(1);

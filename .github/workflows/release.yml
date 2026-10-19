@@ -184,7 +184,7 @@ jobs:
             ## 🚀 CodeRecall ${{ steps.rel.outputs.tag }}
 
             ### 版本亮点
-            - 支持 Node.js 20 / 22（Node 要求：`>=20 <24`，推荐 Node 22 LTS）
+            - 支持 Node.js 20 / 22 / 24（Node 要求：`>=20 <25`，推荐 Node 22 LTS）
             - 主包默认内置 JavaScript / Python / Go 的 AST 分片能力
             - TypeScript / Kotlin / Java / Rust 提升为默认核心支持
             - C / C++ / C# / PHP / Ruby / Swift 继续通过按需插件增强

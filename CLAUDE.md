@@ -143,7 +143,7 @@ scanner/
 ## Code Conventions
 
 - TypeScript ESM (`"type": "module"`)，所有相对导入带 `.js` 后缀
-- tsup 打包，Node.js >= 20 且 < 24（`.node-version` 固定 22），pnpm 包管理
+- tsup 打包，Node.js >= 20 且 < 25（`.node-version` 与 CI 固定 22，安装允许 Node 24），pnpm 包管理
 - 核心流程必须有中文注释
 - 环境变量通过 `src/config.ts` 统一读取，不直接读 `process.env`
 - CI 流水线: `biome check` → `tsc --noEmit` → `build` → `test`
