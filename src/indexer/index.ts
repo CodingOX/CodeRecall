@@ -11,7 +11,11 @@
 import type Database from 'better-sqlite3';
 import { type EmbeddingProvider, getEmbeddingClient } from '../api/embedding.js';
 import type { ProcessedChunk } from '../chunking/types.js';
-import { batchUpdateVectorIndexHash, clearVectorIndexHash } from '../db/index.js';
+import {
+  batchUpdateVectorIndexHash,
+  clearVectorIndexHash,
+  completeDeletions,
+} from '../db/index.js';
 import type { ProcessResult } from '../scanner/processor.js';
 import {
   batchDeleteFileChunksFts,
@@ -507,15 +511,18 @@ export class Indexer {
    * 删除文件的向量和 FTS 索引
    */
   private async deleteFiles(db: Database.Database, paths: string[]): Promise<void> {
-    if (!this.vectorStore) return;
+    if (!this.vectorStore || paths.length === 0) return;
 
-    // 删除向量索引
+    // 先删除向量索引，再在同一 SQLite 事务中同步删除 chunk FTS 并确认 pending_deletions，
+    // 保证若向量删除中断，下次扫描仍可从 pending_deletions 恢复清理
     await this.vectorStore.deleteFiles(paths);
 
-    // 删除 chunk FTS 索引
-    if (isChunksFtsInitialized(db)) {
-      batchDeleteFileChunksFts(db, paths);
-    }
+    db.transaction(() => {
+      if (isChunksFtsInitialized(db)) {
+        batchDeleteFileChunksFts(db, paths);
+      }
+      completeDeletions(db, paths);
+    })();
 
     logger.debug({ count: paths.length }, '删除文件索引');
   }

@@ -57,14 +57,75 @@ function getDirectoryBirthtime(projectPath: string): number {
 }
 
 /**
+ * 逐级将真实路径还原为磁盘上的实际大小写形式。
+ *
+ * 在大小写不敏感但保留大小写的文件系统（如 macOS APFS）上，仅在 dev 与 ino 完全一致时才接受
+ * 大小写不敏感匹配，防止在大小写敏感文件系统上将不同目录错误合并。
+ */
+function canonicalCase(realPath: string): string {
+  const parsed = path.parse(realPath);
+  let canonical = parsed.root;
+  const segments = realPath.slice(parsed.root.length).split(path.sep).filter(Boolean);
+
+  for (const segment of segments) {
+    const given = path.join(canonical, segment);
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(canonical);
+    } catch {
+      canonical = given;
+      continue;
+    }
+
+    if (entries.includes(segment)) {
+      canonical = given;
+      continue;
+    }
+
+    const lowerSegment = segment.toLowerCase();
+    let matched: string | null = null;
+    try {
+      const givenStat = fs.statSync(given);
+      for (const entry of entries) {
+        if (entry.toLowerCase() !== lowerSegment) continue;
+        const target = path.join(canonical, entry);
+        try {
+          const targetStat = fs.statSync(target);
+          if (givenStat.dev === targetStat.dev && givenStat.ino === targetStat.ino) {
+            matched = entry;
+            break;
+          }
+        } catch {
+          // 忽略单个条目 stat 失败
+        }
+      }
+    } catch {
+      // given stat 失败时保留原段
+    }
+
+    canonical = matched ? path.join(canonical, matched) : given;
+  }
+
+  return canonical;
+}
+
+/**
  * 生成项目唯一 ID
- * 基于路径 + 目录创建时间生成，确保删除后重建的同路径代码库会生成不同的 ID
+ * 基于规范化路径 + 目录创建时间生成，确保同目录的不同写法稳定命中同一 ID，
+ * 且删除后重建的同路径代码库会生成不同的 ID
  * @param projectPath 项目根路径
  * @returns 项目 ID (MD5 hash)
  */
 export function generateProjectId(projectPath: string): string {
-  const birthtime = getDirectoryBirthtime(projectPath);
-  const uniqueKey = `${projectPath}::${birthtime}`;
+  const resolved = path.resolve(projectPath);
+  let normalized = resolved;
+  try {
+    normalized = canonicalCase(fs.realpathSync(resolved));
+  } catch {
+    // 目录尚不存在或无法解析符号链接时，回退到 path.resolve 结果
+  }
+  const birthtime = getDirectoryBirthtime(normalized);
+  const uniqueKey = `${normalized}::${birthtime}`;
   return crypto.createHash('md5').update(uniqueKey).digest('hex').slice(0, 10);
 }
 
@@ -119,6 +180,9 @@ export function initDb(projectId: string): Database.Database {
       value TEXT NOT NULL
     )
   `);
+
+  // 创建待删除队列（崩溃恢复：记录 SQLite 已移除但尚未从 LanceDB/chunks_fts 清理的路径）
+  db.exec('CREATE TABLE IF NOT EXISTS pending_deletions (path TEXT PRIMARY KEY)');
 
   // 初始化 FTS 表（词法搜索支持）
   initFilesFts(db);
@@ -278,11 +342,41 @@ export function getAllPaths(db: Database.Database): string[] {
 }
 
 /**
- * 批量删除文件
+ * 批量删除文件（原子写入 pending_deletions + 删除 files + 删除 files_fts）
  */
 export function batchDelete(db: Database.Database, paths: string[]): void {
-  const stmt = db.prepare('DELETE FROM files WHERE path = ?');
+  if (paths.length === 0) return;
 
+  const insertPending = db.prepare('INSERT OR IGNORE INTO pending_deletions(path) VALUES (?)');
+  const deleteFile = db.prepare('DELETE FROM files WHERE path = ?');
+
+  // 将待删除记录与 files/files_fts 清理置于同一事务，避免向量层删除前崩溃导致孤儿残留
+  const transaction = db.transaction((items: string[]) => {
+    for (const item of items) {
+      insertPending.run(item);
+      deleteFile.run(item);
+    }
+    batchDeleteFileFts(db, items);
+  });
+
+  transaction(paths);
+}
+
+/**
+ * 获取尚未完成向量索引清理的待删除路径
+ */
+export function getPendingDeletions(db: Database.Database): string[] {
+  const rows = db.prepare('SELECT path FROM pending_deletions').all() as Array<{ path: string }>;
+  return rows.map((r) => r.path);
+}
+
+/**
+ * 从 pending_deletions 中移除已完成清理的文件路径
+ */
+export function completeDeletions(db: Database.Database, paths: string[]): void {
+  if (paths.length === 0) return;
+
+  const stmt = db.prepare('DELETE FROM pending_deletions WHERE path = ?');
   const transaction = db.transaction((items: string[]) => {
     for (const item of items) {
       stmt.run(item);
@@ -290,11 +384,6 @@ export function batchDelete(db: Database.Database, paths: string[]): void {
   });
 
   transaction(paths);
-
-  // 同步删除 FTS 索引
-  if (paths.length > 0) {
-    batchDeleteFileFts(db, paths);
-  }
 }
 
 /**
@@ -302,6 +391,7 @@ export function batchDelete(db: Database.Database, paths: string[]): void {
  */
 export function clear(db: Database.Database): void {
   db.exec('DELETE FROM files');
+  db.exec('DELETE FROM pending_deletions');
   // 强制重建时 FTS 表可能已有大量 trigram/chunk 索引。
   // 直接 DELETE 会逐步清理 FTS shadow table，明显慢于 drop 后重建空表。
   try {

@@ -12,6 +12,7 @@ import {
   getAllFileMeta,
   getAllPaths,
   getFilesNeedingVectorIndex,
+  getPendingDeletions,
   getStoredEmbeddingDimensions,
   getStoredEmbeddingSpace,
   initDb,
@@ -153,18 +154,12 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
       filePaths.map((p) => path.relative(rootPath, p).replace(/\\/g, '/')),
     );
 
-    // 处理文件（文件处理很快，不需要报告进度）
+    // 处理文件（processFiles 内部已通过 p-limit 控制自适应并发，不额外切分串行批次以免产生长尾等待）
     const processStartedAt = Date.now();
     const processTiming = createProcessTiming();
-    const results: ProcessResult[] = [];
-    const batchSize = 100;
-    for (let i = 0; i < filePaths.length; i += batchSize) {
-      const batch = filePaths.slice(i, i + batchSize);
-      const batchResults = await processFiles(rootPath, batch, knownFiles, {
-        timing: processTiming,
-      });
-      results.push(...batchResults);
-    }
+    const results = await processFiles(rootPath, filePaths, knownFiles, {
+      timing: processTiming,
+    });
     const processElapsedMs = Date.now() - processStartedAt;
 
     // 准备数据库操作
@@ -193,6 +188,10 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
           break;
 
         case 'skipped':
+          if (knownFiles.has(result.relPath)) {
+            // 曾被索引的文件若因超限或变成二进制而被跳过，需同步从索引中清理
+            deletedPaths.push(result.relPath);
+          }
           logger.debug({ path: result.relPath, reason: result.error }, '跳过文件');
           break;
 
@@ -218,6 +217,11 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
     // 增量更新
     const dbSyncStartedAt = Date.now();
     batchUpsert(db, toAdd, { ftsMode: forceReindex ? 'rebuild' : 'upsert' });
+    // SQLite 与 files_fts 写入完成后释放原始文件内容，减少向量索引阶段的内存峰值
+    for (const r of results) {
+      r.content = null;
+    }
+    toAdd.length = 0;
     batchUpdateMtime(db, toUpdateMtime);
     batchDelete(db, deletedPaths);
     const dbSyncElapsedMs = Date.now() - dbSyncStartedAt;
@@ -278,9 +282,12 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
         .filter((r) => r.status === 'unchanged' && healingPathSet.has(r.relPath))
         .map((r) => r.absPath);
 
+      // 合并本次删除路径与历史遗留的 pending_deletions（如仅元数据扫描或中断清理残留）
+      const pathsToPurge = Array.from(new Set([...deletedPaths, ...getPendingDeletions(db)]));
+
       // 仅在确实存在向量层工作时报告进度，避免“无事可做”也显示准备阶段
       const hasVectorWorkCandidates =
-        needsVectorIndex.length > 0 || deletedPaths.length > 0 || healingFilePaths.length > 0;
+        needsVectorIndex.length > 0 || pathsToPurge.length > 0 || healingFilePaths.length > 0;
       if (hasVectorWorkCandidates) {
         options.onProgress?.(45, 100, '正在准备向量索引...');
       }
@@ -309,10 +316,10 @@ export async function scan(rootPath: string, options: ScanOptions = {}): Promise
           .map((r) => ({ ...r, status: 'modified' as const }));
       }
 
-      // 为 deleted 文件创建占位 ProcessResult
-      const deletedResults: ProcessResult[] = deletedPaths.map((path) => ({
+      // 为 deleted 文件（含 pending_deletions 恢复项）创建占位 ProcessResult
+      const deletedResults: ProcessResult[] = pathsToPurge.map((filePath) => ({
         absPath: '',
-        relPath: path,
+        relPath: filePath,
         hash: '',
         content: null,
         chunks: [],

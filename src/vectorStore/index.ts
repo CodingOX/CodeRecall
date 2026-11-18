@@ -126,6 +126,15 @@ export class VectorStore {
       return;
     }
 
+    // 0. 幂等重入保护：若存在同 path 同 hash 记录，先将其 file_hash 标记为 retry: 前缀，
+    // 这样插入新版本后可通过 file_hash != newHash 一并清理旧副本，同时避免丢失窗口
+    if (this.table) {
+      await this.table.update({
+        where: `file_path = '${this.escapeString(filePath)}' AND file_hash = '${this.escapeString(newHash)}'`,
+        valuesSql: { file_hash: "concat('retry:', file_hash)" },
+      });
+    }
+
     // 1. 插入新版本
     if (!this.table) {
       await this.ensureTable(records);
@@ -133,7 +142,7 @@ export class VectorStore {
       await this.table.add(records as unknown as Record<string, unknown>[]);
     }
 
-    // 2. 删除旧版本（file_hash != newHash）
+    // 2. 删除旧版本（file_hash != newHash，包含本次标记的 retry: 前缀旧记录）
     if (this.table) {
       await this.table.delete(
         `file_path = '${this.escapeString(filePath)}' AND file_hash != '${this.escapeString(newHash)}'`,
@@ -212,6 +221,23 @@ export class VectorStore {
         continue;
       }
 
+      const nonEmptyFiles = batch.filter((f) => f.records.length > 0);
+      const emptyFilePaths = batch.filter((f) => f.records.length === 0).map((f) => f.path);
+
+      // 0. 幂等重入保护：插入前将同 path 同 hash 的残留记录标记为 retry: 前缀
+      if (this.table && nonEmptyFiles.length > 0) {
+        const retryConditions = nonEmptyFiles
+          .map(
+            (f) =>
+              `(file_path = '${this.escapeString(f.path)}' AND file_hash = '${this.escapeString(f.hash)}')`,
+          )
+          .join(' OR ');
+        await this.table.update({
+          where: retryConditions,
+          valuesSql: { file_hash: "concat('retry:', file_hash)" },
+        });
+      }
+
       // 1. 批量插入本批次的 records
       if (!this.table) {
         await this.ensureTable(batchRecords);
@@ -219,9 +245,9 @@ export class VectorStore {
         await this.table.add(batchRecords as unknown as Record<string, unknown>[]);
       }
 
-      // 2. 批量删除本批次的旧版本
-      if (this.table && batch.length > 0) {
-        const deleteConditions = batch
+      // 2. 批量删除本批次的旧版本（包含被标记为 retry: 的同 hash 旧记录）
+      if (this.table && nonEmptyFiles.length > 0) {
+        const deleteConditions = nonEmptyFiles
           .map(
             (f) =>
               `(file_path = '${this.escapeString(f.path)}' AND file_hash != '${this.escapeString(f.hash)}')`,
@@ -229,6 +255,9 @@ export class VectorStore {
           .join(' OR ');
         await this.table.delete(deleteConditions);
       }
+
+      // 3. 彻底清理缩减为 0 chunk 的文件旧向量
+      await this.deleteFiles(emptyFilePaths);
     }
   }
 
