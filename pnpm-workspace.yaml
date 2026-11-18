@@ -1,6 +1,10 @@
 packages:
   - 'packages/*'
 
+# pnpm 11 将 workspace 链接配置从 .npmrc 迁移至 pnpm-workspace.yaml，确保语义化版本依赖本地包
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+
 # pnpm 11 不再读取 package.json 的 pnpm.onlyBuiltDependencies，原生模块在这里放行。
 allowBuilds:
   better-sqlite3: true

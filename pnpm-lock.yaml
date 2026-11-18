@@ -88,35 +88,35 @@ importers:
   packages/lang-all:
     dependencies:
       '@alistar.max/coderecall-lang-c':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-c
       '@alistar.max/coderecall-lang-cpp':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-cpp
       '@alistar.max/coderecall-lang-csharp':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-csharp
       '@alistar.max/coderecall-lang-java':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-java
       '@alistar.max/coderecall-lang-kotlin':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-kotlin
       '@alistar.max/coderecall-lang-php':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-php
       '@alistar.max/coderecall-lang-ruby':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-ruby
       '@alistar.max/coderecall-lang-rust':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-rust
       '@alistar.max/coderecall-lang-swift':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-swift
       '@alistar.max/coderecall-lang-typescript':
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: ^0.2.0
+        version: link:../lang-typescript
 
   packages/lang-c:
     dependencies:
@@ -212,36 +212,6 @@ importers:
         version: 0.23.2(tree-sitter@0.21.1)
 
 packages:
-
-  '@alistar.max/coderecall-lang-c@0.1.3':
-    resolution: {integrity: sha512-upk277M0g3/XstYTmYhg66rPC9YT3l7a7m/o5z3yQgncU+GrhWgQtf/+n4/Fr+EZlFNWbncIIDPEtafGNDyvQg==}
-
-  '@alistar.max/coderecall-lang-cpp@0.1.3':
-    resolution: {integrity: sha512-5SrrW+LHnV6DmQcKqluZ05CfcE1eMdpJ+BMYg5dDv+8nYj+hHqlEOu3aO4U5575up+B+7xKCIYUlNSgGMhFLHQ==}
-
-  '@alistar.max/coderecall-lang-csharp@0.1.3':
-    resolution: {integrity: sha512-nXadKMC0HDQ9eydiXjZ/13wD3uYOpwVrsRytrXCNd/JdBi3Z7ZWasl1DDXntEveXRd5vqi3YrryALJlIpOdoyw==}
-
-  '@alistar.max/coderecall-lang-java@0.1.3':
-    resolution: {integrity: sha512-gTJpJPS1XK9WHuD0/lgm8vqNpI+qnUe/6mfrRlQYJpN4uzf6O2YYajGzrg7FNdqWM13/6DH+UBfLWyXxmA2oyQ==}
-
-  '@alistar.max/coderecall-lang-kotlin@0.1.3':
-    resolution: {integrity: sha512-OEsx/SVXPuyxYSGjXiVp/BwSB39kYQiKoPuZZ4LiKTK1xO7eLY3a1FXHVT03c4ZUme7UkflCsNRcFCq2ZBf+sQ==}
-
-  '@alistar.max/coderecall-lang-php@0.1.3':
-    resolution: {integrity: sha512-FpOsaPbv0Ca5LbhAytViGsvCGBtae5lq5btk9oVxqpxTg5Ugm+QQ11cIjvuvP6Z02mnaBCnCcpzmCK4ueTPE9Q==}
-
-  '@alistar.max/coderecall-lang-ruby@0.1.3':
-    resolution: {integrity: sha512-xF0h0XjTdFtqDmIgfv981zBuie4jGZibl8rDdlrKgjuR7WnHVS9M5m8QLUZG8KVboj4fslOmh++DEj/HYZhmrg==}
-
-  '@alistar.max/coderecall-lang-rust@0.1.3':
-    resolution: {integrity: sha512-gMIPQLgELc0kmQuJGN1endaLX7Ra9+Dp9TI2OZ5n4cUSovfAEeHba8g2uqX53RN3iAPDFJR/W+MlQeYHSXsBmw==}
-
-  '@alistar.max/coderecall-lang-swift@0.1.3':
-    resolution: {integrity: sha512-oiA6f0olytuCeg1juN8uOtIbUa3ifW5zxF2ckz7hkw6/uNSkd8lOW7DHSIUsiNbwdLqEEky+S+gCEyn3oVXk1w==}
-
-  '@alistar.max/coderecall-lang-typescript@0.1.3':
-    resolution: {integrity: sha512-tY4+td9AK7r+woptaUIJlvwdrM+WBiqNp1vt+3JBqiIMD9IMiFsRoXBnfGLy02I4GuyII63TzkCG4BoDoeWMog==}
 
   '@biomejs/biome@2.3.10':
     resolution: {integrity: sha512-/uWSUd1MHX2fjqNLHNL6zLYWBbrJeG412/8H7ESuK8ewoRoMPUgHDebqKrPTx/5n6f17Xzqc9hdg3MEqA5hXnQ==}
@@ -2288,6 +2258,9 @@ packages:
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
+  tslib@2.9.1:
+    resolution: {integrity: sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==}
+
   tsup@8.5.1:
     resolution: {integrity: sha512-xtgkqwdhpKWr3tKPmCkvYmS9xnQK3m3XgxZHwSUjvfTjp7YfXe5tT3GgWi0F2N+ZSMsOeWeZFh7ZZFg5iPhing==}
     engines: {node: '>=18'}
@@ -2394,61 +2367,6 @@ packages:
     resolution: {integrity: sha512-0wZ1IRqGGhMP76gLqz8EyfBXKk0J2qo2+H3fi4mcUP/KtTocoX08nmIAHl1Z2kJIZbZee8KOpBCSNPRgauucjw==}
 
 snapshots:
-
-  '@alistar.max/coderecall-lang-c@0.1.3':
-    dependencies:
-      tree-sitter: 0.22.4
-      tree-sitter-c: 0.24.1(tree-sitter@0.22.4)
-
-  '@alistar.max/coderecall-lang-cpp@0.1.3':
-    dependencies:
-      tree-sitter: 0.21.1
-      tree-sitter-c: 0.23.1(tree-sitter@0.21.1)
-      tree-sitter-cpp: 0.23.4(tree-sitter@0.21.1)
-
-  '@alistar.max/coderecall-lang-csharp@0.1.3':
-    dependencies:
-      tree-sitter: 0.25.1
-      tree-sitter-c-sharp: 0.23.5(tree-sitter@0.25.1)
-
-  '@alistar.max/coderecall-lang-java@0.1.3':
-    dependencies:
-      tree-sitter: 0.21.1
-      tree-sitter-java: 0.23.5(tree-sitter@0.21.1)
-
-  '@alistar.max/coderecall-lang-kotlin@0.1.3':
-    dependencies:
-      tree-sitter: 0.21.1
-      tree-sitter-kotlin: 0.3.8(tree-sitter@0.21.1)
-    transitivePeerDependencies:
-      - tree_sitter
-
-  '@alistar.max/coderecall-lang-php@0.1.3':
-    dependencies:
-      tree-sitter: 0.22.4
-      tree-sitter-php: 0.24.2(tree-sitter@0.22.4)
-
-  '@alistar.max/coderecall-lang-ruby@0.1.3':
-    dependencies:
-      tree-sitter: 0.21.1
-      tree-sitter-ruby: 0.23.1(tree-sitter@0.21.1)
-
-  '@alistar.max/coderecall-lang-rust@0.1.3':
-    dependencies:
-      tree-sitter: 0.22.4
-      tree-sitter-rust: 0.24.0(tree-sitter@0.22.4)
-
-  '@alistar.max/coderecall-lang-swift@0.1.3':
-    dependencies:
-      tree-sitter: 0.22.4
-      tree-sitter-swift: 0.7.1(tree-sitter@0.22.4)
-    transitivePeerDependencies:
-      - tree_sitter
-
-  '@alistar.max/coderecall-lang-typescript@0.1.3':
-    dependencies:
-      tree-sitter: 0.21.1
-      tree-sitter-typescript: 0.23.2(tree-sitter@0.21.1)
 
   '@biomejs/biome@2.3.10':
     optionalDependencies:
@@ -3036,7 +2954,7 @@ snapshots:
 
   '@swc/helpers@0.5.18':
     dependencies:
-      tslib: 2.8.1
+      tslib: 2.9.1
 
   '@tybys/wasm-util@0.10.1':
     dependencies:
@@ -3099,7 +3017,7 @@ snapshots:
       command-line-usage: 7.0.4
       flatbuffers: 24.12.23
       json-bignum: 0.0.3
-      tslib: 2.8.1
+      tslib: 2.9.1
 
   argparse@2.0.1: {}
 
@@ -4269,7 +4187,10 @@ snapshots:
 
   ts-interface-checker@0.1.13: {}
 
-  tslib@2.8.1: {}
+  tslib@2.8.1:
+    optional: true
+
+  tslib@2.9.1: {}
 
   tsup@8.5.1(jiti@2.6.1)(supports-color@7.2.0)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.8.2):
     dependencies:
