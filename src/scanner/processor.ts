@@ -4,7 +4,7 @@ import path from 'node:path';
 import pLimit from 'p-limit';
 import { getParser, type ProcessedChunk, SemanticSplitter } from '../chunking/index.js';
 import { getChunkingConfig, getCodeRecallProfile } from '../config.js';
-import { readFileWithEncoding } from '../utils/encoding.js';
+import { decodeBuffer, detectBOM } from '../utils/encoding.js';
 import { sha256 } from './hash.js';
 import { getAllowedLanguages, getLanguage, isAllowedExtension } from './language.js';
 
@@ -153,6 +153,23 @@ async function processFile(
   const language = getLanguage(relPath);
   if (timing) timing.files++;
 
+  // lock 文件与 node_modules JSON 判断仅依赖路径，放到 stat/读文件之前避免无效 I/O
+  if (language === 'json' && shouldSkipJson(relPath)) {
+    if (timing) timing.skippedFiles++;
+    return {
+      absPath,
+      relPath,
+      hash: '',
+      content: null,
+      chunks: [],
+      language,
+      mtime: 0,
+      size: 0,
+      status: 'skipped',
+      error: 'Lock file or node_modules JSON',
+    };
+  }
+
   try {
     const statStartedAt = Date.now();
     const stat = await fs.stat(absPath);
@@ -200,12 +217,57 @@ async function processFile(
       };
     }
 
-    // 读取文件内容（自动检测编码并转换为 UTF-8）
+    // 读取原始字节一次，后续二进制判定、原始哈希和编码解码共用该 Buffer
     const readStartedAt = Date.now();
-    const { content, originalEncoding } = await readFileWithEncoding(absPath);
+    const buffer = await fs.readFile(absPath);
     addTiming(timing, 'readMs', Date.now() - readStartedAt);
 
-    // 二进制检测：检查 NULL 字节
+    // 显式 UTF-16/UTF-32 BOM 文本会合法包含 0x00 字节；其余文件先按原始字节查 NUL，
+    // 防止误判为 UTF-16 解码时把 NUL 吞掉造成二进制漏判
+    const bom = detectBOM(buffer);
+    const isUtf16Or32Bom = bom?.startsWith('UTF-16') || bom?.startsWith('UTF-32');
+
+    if (!isUtf16Or32Bom && buffer.includes(0)) {
+      if (timing) timing.skippedFiles++;
+      return {
+        absPath,
+        relPath,
+        hash: '',
+        content: null,
+        chunks: [],
+        language,
+        mtime,
+        size,
+        status: 'skipped',
+        error: 'Binary file detected (NUL byte)',
+      };
+    }
+
+    // 基于原始字节计算哈希，不受编码探测波动影响
+    const hashStartedAt = Date.now();
+    const hash = sha256(buffer);
+    addTiming(timing, 'hashMs', Date.now() - hashStartedAt);
+
+    // 非 UTF-16/UTF-32 BOM 文件若哈希未变，直接跳过解码与分片
+    if (!isUtf16Or32Bom && known && known.hash === hash) {
+      if (timing) timing.unchangedFiles++;
+      return {
+        absPath,
+        relPath,
+        hash,
+        content: null,
+        chunks: [],
+        language,
+        mtime,
+        size,
+        status: 'unchanged',
+      };
+    }
+
+    // 解码缓冲区（自动检测编码并转换为 UTF-8，统一剥离前导 BOM）
+    const { content, originalEncoding } = decodeBuffer(buffer);
+
+    // 二进制兜底检测：检查解码后的 NULL 字符（如带 BOM 却混入 U+0000 的文件）
     if (content.includes('\0')) {
       if (timing) timing.skippedFiles++;
       return {
@@ -222,30 +284,9 @@ async function processFile(
       };
     }
 
-    // 计算哈希
-    const hashStartedAt = Date.now();
-    const hash = sha256(content);
-    addTiming(timing, 'hashMs', Date.now() - hashStartedAt);
-
-    // 如果已知 hash 且相同，则认为未修改（mtime 可能由于某些原因变了）
-    if (known && known.hash === hash) {
+    // 带 UTF-16/UTF-32 BOM 文件需在解码与 NUL 校验完成后再判哈希未变
+    if (isUtf16Or32Bom && known && known.hash === hash) {
       if (timing) timing.unchangedFiles++;
-      return {
-        absPath,
-        relPath,
-        hash,
-        content,
-        chunks: [],
-        language,
-        mtime,
-        size,
-        status: 'unchanged',
-      };
-    }
-
-    // ===== JSON 文件特殊处理 =====
-    if (language === 'json' && shouldSkipJson(relPath)) {
-      if (timing) timing.skippedFiles++;
       return {
         absPath,
         relPath,
@@ -255,8 +296,7 @@ async function processFile(
         language,
         mtime,
         size,
-        status: 'skipped',
-        error: 'Lock file or node_modules JSON',
+        status: 'unchanged',
       };
     }
 
@@ -309,7 +349,23 @@ async function processFile(
     };
   } catch (err) {
     if (timing) timing.skippedFiles++;
-    const error = err as { message?: string };
+    const error = err as NodeJS.ErrnoException;
+    // 扫描窗口内文件被删除（git checkout、构建清理等）是正常竞态，
+    // 归类为 skipped 而非 error，避免错误统计虚增；下次扫描会自然清理 DB 记录
+    if (error.code === 'ENOENT') {
+      return {
+        absPath,
+        relPath,
+        hash: '',
+        content: null,
+        chunks: [],
+        language,
+        mtime: 0,
+        size: 0,
+        status: 'skipped',
+        error: 'File deleted during scan',
+      };
+    }
     return {
       absPath,
       relPath,
