@@ -11,11 +11,13 @@ export const DEFAULT_CONFIG: SearchConfig = {
   ftsTopKFiles: 20,
   lexChunksPerFile: 2,
   lexTotalChunks: 40,
+  pathTopK: 20,
 
   // 融合
   rrfK0: 20,
   wVec: 0.6,
   wLex: 0.4,
+  wPath: 0.8,
   fusedTopM: 60,
   preRerankPerFileCap: 5,
 

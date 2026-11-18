@@ -316,6 +316,158 @@ export function batchDeleteFileChunksFts(db: Database.Database, filePaths: strin
 }
 
 /**
+ * 按 tokenizer 能力拆分 FTS5 MATCH token 与短 token。
+ * SQLite FTS5 trigram 对少于 3 个字符的词元无法建索引，必须剥离出 MATCH 表达式。
+ */
+function partitionFtsTokens(
+  tokenizer: FtsTokenizer,
+  tokens: string[],
+): { matchTokens: string[]; shortTokens: string[] } {
+  if (tokenizer !== 'trigram') {
+    return { matchTokens: tokens, shortTokens: [] };
+  }
+
+  const matchTokens: string[] = [];
+  const shortTokens: string[] = [];
+  for (const token of tokens) {
+    if (Array.from(token).length >= 3) {
+      matchTokens.push(token);
+    } else {
+      shortTokens.push(token);
+    }
+  }
+  return { matchTokens, shortTokens };
+}
+
+function buildLangSubquery(column: 'file_path' | 'path', languages?: string[]): string {
+  if (!languages || languages.length === 0) {
+    return '';
+  }
+  const list = languages.map((l) => `'${escapeSqlString(l)}'`).join(', ');
+  return `AND ${column} IN (SELECT path FROM files WHERE language IN (${list}))`;
+}
+
+/**
+ * trigram 模式下无可用 >=3 字符 token 时的参数化子串检索兜底（chunks_fts）。
+ * 使用与 BM25 一致的四列权重，避免短中文词或 1-2 字符符号静默零召回。
+ */
+function searchChunksBySubstring(
+  db: Database.Database,
+  shortTokens: string[],
+  limit: number,
+  langSubquery: string,
+): ChunkFtsResult[] {
+  const normalized = Array.from(
+    new Set(shortTokens.map((t) => t.toLowerCase()).filter(Boolean)),
+  ).slice(0, 16);
+  if (normalized.length === 0) return [];
+
+  const tokenExpr = `(
+    (CASE WHEN instr(lower(symbol_tokens), ?) > 0 THEN ? ELSE 0 END) +
+    (CASE WHEN instr(lower(breadcrumb), ?) > 0 THEN ? ELSE 0 END) +
+    (CASE WHEN instr(lower(body), ?) > 0 THEN ? ELSE 0 END) +
+    (CASE WHEN instr(lower(comments), ?) > 0 THEN ? ELSE 0 END)
+  )`;
+  const scoreExpr = normalized.map(() => tokenExpr).join(' + ');
+  const params: Array<string | number> = [];
+  for (const token of normalized) {
+    params.push(
+      token,
+      CHUNKS_FTS_BM25_WEIGHTS.symbolTokens,
+      token,
+      CHUNKS_FTS_BM25_WEIGHTS.breadcrumb,
+      token,
+      CHUNKS_FTS_BM25_WEIGHTS.body,
+      token,
+      CHUNKS_FTS_BM25_WEIGHTS.comments,
+    );
+  }
+  params.push(limit);
+
+  try {
+    const rows = db
+      .prepare(`
+        WITH scored AS (
+          SELECT chunk_id, file_path, chunk_index,
+                 (${scoreExpr}) AS score
+          FROM chunks_fts
+          WHERE 1=1
+          ${langSubquery}
+        )
+        SELECT chunk_id, file_path, chunk_index, score
+        FROM scored
+        WHERE score > 0
+        ORDER BY score DESC
+        LIMIT ?
+      `)
+      .all(...params) as Array<{
+      chunk_id: string;
+      file_path: string;
+      chunk_index: number;
+      score: number;
+    }>;
+
+    return rows.map((r) => ({
+      chunkId: r.chunk_id,
+      filePath: r.file_path,
+      chunkIndex: r.chunk_index,
+      score: r.score,
+    }));
+  } catch (e) {
+    logger.debug({ error: e }, 'Chunk FTS 短词子串兜底查询出错');
+    return [];
+  }
+}
+
+/**
+ * trigram 模式下无可用 >=3 字符 token 时的参数化子串检索兜底（files_fts）。
+ */
+function searchFilesBySubstring(
+  db: Database.Database,
+  shortTokens: string[],
+  limit: number,
+  langSubquery: string,
+): FtsSearchResult[] {
+  const normalized = Array.from(
+    new Set(shortTokens.map((t) => t.toLowerCase()).filter(Boolean)),
+  ).slice(0, 16);
+  if (normalized.length === 0) return [];
+
+  const tokenExpr =
+    '((CASE WHEN instr(lower(path), ?) > 0 THEN 3.0 ELSE 0 END) + (CASE WHEN instr(lower(content), ?) > 0 THEN 1.0 ELSE 0 END))';
+  const scoreExpr = normalized.map(() => tokenExpr).join(' + ');
+  const params: Array<string | number> = [];
+  for (const token of normalized) {
+    params.push(token, token);
+  }
+  params.push(limit);
+
+  try {
+    const rows = db
+      .prepare(`
+        WITH scored AS (
+          SELECT path,
+                 (${scoreExpr}) AS score
+          FROM files_fts
+          WHERE 1=1
+          ${langSubquery}
+        )
+        SELECT path, score
+        FROM scored
+        WHERE score > 0
+        ORDER BY score DESC
+        LIMIT ?
+      `)
+      .all(...params) as Array<{ path: string; score: number }>;
+
+    return rows.map((r) => ({ path: r.path, score: r.score }));
+  } catch (e) {
+    logger.debug({ error: e }, 'Files FTS 短词子串兜底查询出错');
+    return [];
+  }
+}
+
+/**
  * 搜索 chunks_fts（直接返回 chunk 级别结果）
  *
  * @param db 数据库实例
@@ -336,20 +488,37 @@ export function searchChunksFts(
     return [];
   }
 
+  const tokenizer = detectFtsTokenizer(db);
+  const { matchTokens, shortTokens } = partitionFtsTokens(tokenizer, tokens);
+
   logger.debug(
     {
       rawQuery: query,
-      tokens: tokens,
+      tokens,
+      matchTokens,
+      shortTokens,
+      tokenizer,
       languages,
     },
     'Chunk FTS 分词结果',
   );
 
   // 语言过滤子查询：通过 files 表关联实现（chunks_fts 无 language 列）
-  const langSubquery =
-    languages && languages.length > 0
-      ? `AND file_path IN (SELECT path FROM files WHERE language IN (${languages.map((l) => `'${escapeSqlString(l)}'`).join(', ')}))`
-      : '';
+  const langSubquery = buildLangSubquery('file_path', languages);
+
+  // trigram 模式下若无 >=3 字符 token，降级到加权 instr 子串检索
+  if (tokenizer === 'trigram' && matchTokens.length === 0 && shortTokens.length > 0) {
+    const fallbackResults = searchChunksBySubstring(db, shortTokens, limit, langSubquery);
+    logger.debug(
+      { type: 'short-substring', count: fallbackResults.length, shortTokens },
+      'Chunk FTS 短词兜底搜索',
+    );
+    return fallbackResults;
+  }
+
+  if (matchTokens.length === 0) {
+    return [];
+  }
 
   const runQuery = (qStr: string, queryLimit: number): ChunkFtsResult[] => {
     try {
@@ -389,17 +558,17 @@ export function searchChunksFts(
     }
   };
 
-  // 策略一：精准查询 (AND)
-  const strictQuery = tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' AND ');
+  // 策略一：精准查询 (AND) - 仅使用满足 tokenizer 长度要求的词元
+  const strictQuery = matchTokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' AND ');
   const results = runQuery(strictQuery, limit);
 
   logger.debug({ type: 'strict', count: results.length, query: strictQuery }, 'Chunk FTS 精准搜索');
 
   // 策略二：宽容查询 (OR) - 仅当结果不足时触发
-  if (results.length < limit && tokens.length > 1) {
+  if (results.length < limit && matchTokens.length > 1) {
     const beforeCount = results.length;
     const remainingLimit = limit - results.length;
-    const relaxedQuery = tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
+    const relaxedQuery = matchTokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
 
     const relaxedResults = runQuery(relaxedQuery, remainingLimit + 10);
 
@@ -619,6 +788,11 @@ export function segmentQuery(query: string): string[] {
     }
   }
 
+  // D. 提取连续汉字序列（3~8 字），确保 "索引状态" / "进程锁" 等中文短语命中 trigram
+  for (const match of cleanRaw.matchAll(/\p{Script=Han}{3,8}/gu)) {
+    uniqueTokens.add(match[0]);
+  }
+
   return Array.from(uniqueTokens);
 }
 
@@ -647,20 +821,37 @@ export function searchFilesFts(
     return [];
   }
 
+  const tokenizer = detectFtsTokenizer(db);
+  const { matchTokens, shortTokens } = partitionFtsTokens(tokenizer, tokens);
+
   logger.debug(
     {
       rawQuery: query,
-      tokens: tokens,
+      tokens,
+      matchTokens,
+      shortTokens,
+      tokenizer,
       languages,
     },
     'FTS 分词结果',
   );
 
   // 语言过滤子查询：通过 files 表关联实现（files_fts 无 language 列）
-  const langSubquery =
-    languages && languages.length > 0
-      ? `AND path IN (SELECT path FROM files WHERE language IN (${languages.map((l) => `'${escapeSqlString(l)}'`).join(', ')}))`
-      : '';
+  const langSubquery = buildLangSubquery('path', languages);
+
+  // trigram 模式下若无 >=3 字符 token，降级到加权 instr 子串检索
+  if (tokenizer === 'trigram' && matchTokens.length === 0 && shortTokens.length > 0) {
+    const fallbackResults = searchFilesBySubstring(db, shortTokens, limit, langSubquery);
+    logger.debug(
+      { type: 'short-substring', count: fallbackResults.length, shortTokens },
+      'FTS 短词兜底搜索',
+    );
+    return fallbackResults;
+  }
+
+  if (matchTokens.length === 0) {
+    return [];
+  }
 
   // 辅助：执行 SQL 查询
   const runQuery = (qStr: string, queryLimit: number): FtsSearchResult[] => {
@@ -683,17 +874,17 @@ export function searchFilesFts(
     }
   };
 
-  // 2. 策略一：精准查询 (AND)
-  const strictQuery = tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' AND ');
+  // 2. 策略一：精准查询 (AND) - 仅使用满足 tokenizer 长度要求的词元
+  const strictQuery = matchTokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' AND ');
   const results = runQuery(strictQuery, limit);
 
   logger.debug({ type: 'strict', count: results.length, query: strictQuery }, 'FTS 精准搜索');
 
   // 3. 策略二：宽容查询 (OR) - 仅当结果不足时触发
-  if (results.length < limit && tokens.length > 1) {
+  if (results.length < limit && matchTokens.length > 1) {
     const beforeCount = results.length;
     const remainingLimit = limit - results.length;
-    const relaxedQuery = tokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
+    const relaxedQuery = matchTokens.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR ');
 
     const relaxedResults = runQuery(relaxedQuery, remainingLimit + 10); // 多取一点用于去重
 

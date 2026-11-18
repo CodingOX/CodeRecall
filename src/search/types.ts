@@ -3,6 +3,7 @@
  */
 
 import type { ChunkRecord } from '../vectorStore/index.js';
+import type { RetrievalPlan } from './RetrievalPlan.js';
 
 // ===========================================
 // 配置类型
@@ -16,11 +17,13 @@ export interface SearchConfig {
   ftsTopKFiles: number;
   lexChunksPerFile: number;
   lexTotalChunks: number;
+  pathTopK: number;
 
   // 融合（Phase 1）
   rrfK0: number;
   wVec: number;
   wLex: number;
+  wPath: number;
   fusedTopM: number;
   /** 融合后、Rerank 前的单文件候选上限 */
   preRerankPerFileCap: number;
@@ -118,7 +121,14 @@ export interface BuildContextPackOptions {
 // ===========================================
 
 /** Chunk 来源类型 */
-export type ChunkSource = 'vector' | 'lexical' | 'both' | 'neighbor' | 'breadcrumb' | 'import';
+export type ChunkSource =
+  | 'vector'
+  | 'lexical'
+  | 'both'
+  | 'path'
+  | 'neighbor'
+  | 'breadcrumb'
+  | 'import';
 
 /** 带得分的 Chunk */
 export interface ScoredChunk {
@@ -171,6 +181,8 @@ export interface ContextPack {
   debug?: {
     wVec: number;
     wLex: number;
+    wPath?: number;
     timingMs: Record<string, number>;
+    plan?: RetrievalPlan;
   };
 }

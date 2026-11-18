@@ -27,6 +27,8 @@ import {
   segmentQuery,
 } from './fts.js';
 import { getGraphExpander } from './GraphExpander.js';
+import { searchPaths } from './PathRecall.js';
+import { buildRetrievalPlan, type RetrievalPlan } from './RetrievalPlan.js';
 import type {
   BuildContextPackOptions,
   ContextPack,
@@ -190,12 +192,15 @@ export class SearchService {
     const lexicalQuery = channels?.lexicalQuery ?? query;
     const rerankQuery = channels?.rerankQuery ?? query;
 
-    // 1. 混合召回
+    const plan = buildRetrievalPlan(vectorQuery);
+
+    // 1. 混合召回（按检索计划启用向量/词法/路径通道）
     const candidates = await this.hybridRetrieve(
       vectorQuery,
       lexicalQuery,
       languageWhereClause,
       options?.languageFilter,
+      plan,
     );
     const filteredCandidates = filePathFilter
       ? candidates.filter((chunk) => filePathFilter(chunk.filePath))
@@ -224,15 +229,15 @@ export class SearchService {
     }
     timingMs.rerank = Date.now() - t0;
 
-    // 4. Smart TopK Cutoff
+    // 4. Smart TopK Cutoff（含计划驱动的种子数上限与文件多样性保底）
     t0 = Date.now();
-    const seeds = this.applySmartCutoff(reranked);
+    const seeds = this.applySmartCutoff(reranked, plan);
     timingMs.smartCutoff = Date.now() - t0;
 
     // 5. 扩展（Phase 2 实现）
     t0 = Date.now();
     const queryTokens = this.extractQueryTokens(query);
-    const expanded = await this.expand(seeds, queryTokens);
+    const expanded = await this.expand(seeds, queryTokens, plan);
     let filteredExpanded = filePathFilter
       ? expanded.filter((chunk) => filePathFilter(chunk.filePath))
       : expanded;
@@ -260,7 +265,9 @@ export class SearchService {
       debug: {
         wVec: this.config.wVec,
         wLex: this.config.wLex,
+        wPath: this.config.wPath,
         timingMs,
+        plan,
       },
     };
   }
@@ -268,35 +275,86 @@ export class SearchService {
   // 召回方法
 
   /**
-   * 混合召回：向量 + 词法
+   * 混合召回：向量 + 词法 +（可选）路径
    */
   private async hybridRetrieve(
     vectorQuery: string,
     lexicalQuery: string,
     languageWhereClause?: string,
     languageFilter?: string[],
+    plan?: RetrievalPlan,
   ): Promise<ScoredChunk[]> {
-    // 并行执行向量和词法召回
-    const [vectorResults, lexicalResults] = await Promise.all([
-      this.vectorRetrieve(vectorQuery, languageWhereClause),
-      this.lexicalRetrieve(lexicalQuery, languageFilter),
+    const activePlan = plan ?? buildRetrievalPlan(vectorQuery);
+
+    // 并行执行向量、词法和路径召回
+    const [vectorResults, lexicalResults, pathResults] = await Promise.all([
+      activePlan.useVector
+        ? this.vectorRetrieve(vectorQuery, languageWhereClause)
+        : Promise.resolve([]),
+      activePlan.useLexical
+        ? this.lexicalRetrieve(lexicalQuery, languageFilter)
+        : Promise.resolve([]),
+      activePlan.usePath && this.config.wPath > 0 && this.config.pathTopK > 0
+        ? this.pathRetrieve(lexicalQuery, languageFilter)
+        : Promise.resolve([]),
     ]);
 
     logger.debug(
       {
+        intent: activePlan.intent,
         vectorCount: vectorResults.length,
         lexicalCount: lexicalResults.length,
+        pathCount: pathResults.length,
       },
       '混合召回完成',
     );
 
-    // 如果词法召回没有结果，直接返回向量结果
-    if (lexicalResults.length === 0) {
+    // 若词法与路径召回均无结果，直接返回向量结果
+    if (lexicalResults.length === 0 && pathResults.length === 0) {
       return vectorResults;
     }
 
     // RRF 融合
-    return this.fuse(vectorResults, lexicalResults);
+    return this.fuse(vectorResults, lexicalResults, pathResults);
+  }
+
+  /**
+   * 基于 SQLite 文件清单的路径召回，仅在路径/复合意图时启用
+   */
+  private async pathRetrieve(query: string, languageFilter?: string[]): Promise<ScoredChunk[]> {
+    if (!this.db || !this.vectorStore) return [];
+    const matches = searchPaths(this.db, query, this.config.pathTopK, languageFilter);
+    if (matches.length === 0) return [];
+
+    const chunksByFile = await this.vectorStore.getFilesChunks(
+      matches.map((item) => item.filePath),
+    );
+    if (!chunksByFile) return [];
+
+    const queryTokens = this.extractQueryTokens(query);
+    const out: Array<ScoredChunk & { _rank: number }> = [];
+    for (const match of matches) {
+      const chunks = chunksByFile.get(match.filePath) ?? [];
+      if (chunks.length === 0) continue;
+
+      // 每个命中文件挑选与 query token 重合度最高的代表 chunk 进入融合
+      const representative = [...chunks].sort(
+        (a, b) =>
+          this.scoreChunkTokenOverlap(b, queryTokens) -
+            this.scoreChunkTokenOverlap(a, queryTokens) || a.chunk_index - b.chunk_index,
+      )[0];
+
+      out.push({
+        filePath: representative.file_path,
+        chunkIndex: representative.chunk_index,
+        score: match.score,
+        source: 'path',
+        record: { ...representative, _distance: 0 },
+        _rank: out.length,
+      });
+    }
+
+    return out;
   }
 
   /**
@@ -564,8 +622,9 @@ export class SearchService {
   private fuse(
     vectorResults: (ScoredChunk & { _rank?: number })[],
     lexicalResults: (ScoredChunk & { _rank?: number })[],
+    pathResults: (ScoredChunk & { _rank?: number })[] = [],
   ): ScoredChunk[] {
-    const { rrfK0, wVec, wLex } = this.config;
+    const { rrfK0, wVec, wLex, wPath } = this.config;
 
     // 构建 chunk_id -> 融合分数 的映射
     const fusedScores = new Map<
@@ -580,45 +639,35 @@ export class SearchService {
     // 辅助函数：生成唯一键
     const getKey = (chunk: ScoredChunk) => `${chunk.filePath}#${chunk.chunkIndex}`;
 
-    // 处理向量结果
-    for (const result of vectorResults) {
-      const key = getKey(result);
-      const rank = result._rank ?? 0;
-      const rrfScore = wVec / (rrfK0 + rank);
+    const addChannel = (
+      results: (ScoredChunk & { _rank?: number })[],
+      weight: number,
+      source: 'vector' | 'lexical' | 'path',
+    ): void => {
+      for (const result of results) {
+        const key = getKey(result);
+        const rank = result._rank ?? 0;
+        const rrfScore = weight / (rrfK0 + rank);
 
-      const existing = fusedScores.get(key);
-      if (existing) {
-        existing.score += rrfScore;
-        existing.sources.add('vector');
-      } else {
-        fusedScores.set(key, {
-          score: rrfScore,
-          chunk: result,
-          sources: new Set(['vector']),
-        });
+        const existing = fusedScores.get(key);
+        if (existing) {
+          existing.score += rrfScore;
+          existing.sources.add(source);
+        } else {
+          fusedScores.set(key, {
+            score: rrfScore,
+            chunk: result,
+            sources: new Set([source]),
+          });
+        }
       }
-    }
+    };
 
-    // 处理词法结果
-    for (const result of lexicalResults) {
-      const key = getKey(result);
-      const rank = result._rank ?? 0;
-      const rrfScore = wLex / (rrfK0 + rank);
+    addChannel(vectorResults, wVec, 'vector');
+    addChannel(lexicalResults, wLex, 'lexical');
+    addChannel(pathResults, wPath, 'path');
 
-      const existing = fusedScores.get(key);
-      if (existing) {
-        existing.score += rrfScore;
-        existing.sources.add('lexical');
-      } else {
-        fusedScores.set(key, {
-          score: rrfScore,
-          chunk: result,
-          sources: new Set(['lexical']),
-        });
-      }
-    }
-
-    // 转换为数组并按融合分数排序
+    // 转换为数组并按融合分数排序（保持多路命中标记为 both）
     const fused = Array.from(fusedScores.values())
       .map(({ score, chunk, sources }) => ({
         ...chunk,
@@ -633,6 +682,7 @@ export class SearchService {
         {
           vectorCount: vectorResults.length,
           lexicalCount: lexicalResults.length,
+          pathCount: pathResults.length,
           fusedCount: fused.length,
           bothSources: Array.from(fusedScores.values()).filter((v) => v.sources.size > 1).length,
         },
@@ -677,15 +727,15 @@ export class SearchService {
   // Smart TopK Cutoff
 
   /**
-   * 智能截断策略（Anchor & Floor + Safe Harbor + Delta Guard）
+   * 智能截断策略（Anchor & Floor + Safe Harbor + Delta Guard + 文件多样性保底）
    *
    * 核心逻辑：
-   * 1. 低置信熔断：topScore < floor → 返回 top1（CLI 友好）或空
+   * 1. 低置信熔断：topScore < floor → 返回 top1 并按 secondaryFloor 补充文件多样性
    * 2. 动态阈值：max(floor, min(ratioThreshold, deltaThreshold))
    * 3. Safe Harbor：前 minK 个只检查 floor，不检查 ratio/delta
-   * 4. 去重 + 补齐：cutoff 后去重，不足 minK 时从后续补齐
+   * 4. 去重 + 补齐 + 多样性保底：确保达到 plan.minSeedFiles 个不同文件（若候选满足阈值）
    */
-  private applySmartCutoff(candidates: ScoredChunk[]): ScoredChunk[] {
+  private applySmartCutoff(candidates: ScoredChunk[], plan?: RetrievalPlan): ScoredChunk[] {
     // 未启用时直接返回原列表
     if (!this.config.enableSmartTopK) {
       return candidates;
@@ -701,15 +751,17 @@ export class SearchService {
       smartTopScoreDeltaAbs: deltaAbs,
       smartMinScore: floor,
       smartMinK: minK,
-      smartMaxK: maxK,
+      smartMaxK: configuredMaxK,
     } = this.config;
 
+    const maxK = Math.max(1, Math.min(configuredMaxK, plan?.maxSeeds ?? configuredMaxK));
+    const minFiles = Math.min(maxK, Math.max(1, plan?.minSeedFiles ?? 1));
     const topScore = sorted[0].score;
 
-    // 低置信熔断/降级（CLI 友好：返回 top1）
+    // 低置信熔断/降级（CLI 友好：保留 top1，并按次级阈值补充不同文件种子）
     if (topScore < floor) {
       logger.debug({ topScore, floor }, 'SmartTopK: Top1 below floor, returning top1 only');
-      return [sorted[0]];
+      return this.ensureMinSeedFiles([sorted[0]], sorted, minFiles, maxK, floor * ratio);
     }
 
     // 动态阈值计算（ratio + deltaAbs 护栏）
@@ -774,15 +826,19 @@ export class SearchService {
       }
     }
 
+    // 多文件意图保底：确保种子覆盖至少 minFiles 个不重复文件
+    const diversified = this.ensureMinSeedFiles(deduped, sorted, minFiles, maxK, floor);
+
     logger.debug(
       {
         originalCount: candidates.length,
         pickedCount: picked.length,
-        finalCount: deduped.length,
+        finalCount: diversified.length,
         topScore,
         floor,
         ratio,
         deltaAbs,
+        minFiles,
         ratioThreshold: ratioThreshold.toFixed(3),
         deltaThreshold: deltaThreshold.toFixed(3),
         dynamicThreshold: dynamicThreshold.toFixed(3),
@@ -790,7 +846,73 @@ export class SearchService {
       'SmartTopK: done',
     );
 
-    return deduped;
+    return diversified;
+  }
+
+  /**
+   * 种子文件多样性保底回填：
+   * 若已选种子覆盖的独立文件数少于 minFiles，从候选列表中补充分数 >= minScore 的未覆盖文件；
+   * 若已达 maxK 上限，优先替换同文件内得分最低的冗余 chunk，始终保留各文件最高分代表。
+   */
+  private ensureMinSeedFiles(
+    selected: ScoredChunk[],
+    sortedCandidates: ScoredChunk[],
+    minFiles: number,
+    maxK: number,
+    minScore: number,
+  ): ScoredChunk[] {
+    if (minFiles <= 1) {
+      return selected;
+    }
+
+    const result = [...selected];
+    const seenKeys = new Set(result.map((c) => this.chunkKey(c)));
+    const fileCounts = new Map<string, number>();
+    for (const item of result) {
+      fileCounts.set(item.filePath, (fileCounts.get(item.filePath) ?? 0) + 1);
+    }
+
+    if (fileCounts.size >= minFiles) {
+      return result;
+    }
+
+    for (const candidate of sortedCandidates) {
+      if (fileCounts.size >= minFiles) break;
+      if (candidate.score < minScore) break;
+
+      const key = this.chunkKey(candidate);
+      if (seenKeys.has(key) || fileCounts.has(candidate.filePath)) {
+        continue;
+      }
+
+      if (result.length < maxK) {
+        result.push(candidate);
+        seenKeys.add(key);
+        fileCounts.set(candidate.filePath, 1);
+        continue;
+      }
+
+      // 已达 maxK 上限：寻找出现次数 > 1 的文件中得分最低的 chunk 进行替换
+      let replaceIdx = -1;
+      for (let i = result.length - 1; i >= 0; i--) {
+        if ((fileCounts.get(result[i].filePath) ?? 0) > 1) {
+          if (replaceIdx === -1 || result[i].score < result[replaceIdx].score) {
+            replaceIdx = i;
+          }
+        }
+      }
+      if (replaceIdx === -1) break;
+
+      const removed = result[replaceIdx];
+      seenKeys.delete(this.chunkKey(removed));
+      fileCounts.set(removed.filePath, (fileCounts.get(removed.filePath) ?? 1) - 1);
+
+      result[replaceIdx] = candidate;
+      seenKeys.add(key);
+      fileCounts.set(candidate.filePath, 1);
+    }
+
+    return result.sort((a, b) => b.score - a.score);
   }
 
   /**
@@ -825,8 +947,13 @@ export class SearchService {
    * - E2: breadcrumb 补段
    * - E3: 相对路径 import 解析
    */
-  private async expand(seeds: ScoredChunk[], queryTokens?: Set<string>): Promise<ScoredChunk[]> {
+  private async expand(
+    seeds: ScoredChunk[],
+    queryTokens?: Set<string>,
+    plan?: RetrievalPlan,
+  ): Promise<ScoredChunk[]> {
     if (seeds.length === 0) return [];
+    if (plan && !plan.expandNeighbors) return [];
 
     const expander = await getGraphExpander(this.projectId, this.config);
     const { chunks, stats } = await expander.expand(seeds, queryTokens);
