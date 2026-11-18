@@ -8,6 +8,7 @@
  * 4. SourceAdapter - 统一索引域适配（UTF-16/UTF-8）
  */
 import type Parser from 'tree-sitter';
+import { logger } from '../utils/logger.js';
 import { getLanguageSpec, type LanguageSpecConfig } from './LanguageSpec.js';
 import { SourceAdapter } from './SourceAdapter.js';
 import type { ChunkMetadata, ProcessedChunk, SplitterConfig, Window } from './types.js';
@@ -20,12 +21,32 @@ export class SemanticSplitter {
 
   constructor(config: Partial<SplitterConfig> = {}) {
     const maxChunkSize = config.maxChunkSize ?? 2500;
+    const minChunkSize = config.minChunkSize ?? 100;
+    const chunkOverlap = config.chunkOverlap ?? 200;
+    // 物理字符硬上限：默认为 maxChunkSize * 4（假设 1 token ≈ 4 chars）
+    const maxRawChars = config.maxRawChars ?? maxChunkSize * 4;
+
+    // 预算参数校验：防止非安全整数或过小阈值引发切片死循环与 header 预算下溢
+    if (
+      !Number.isSafeInteger(maxChunkSize) ||
+      !Number.isSafeInteger(minChunkSize) ||
+      !Number.isSafeInteger(chunkOverlap) ||
+      !Number.isSafeInteger(maxRawChars) ||
+      maxChunkSize < 2 ||
+      maxRawChars < 4 ||
+      minChunkSize < 0 ||
+      chunkOverlap < 0
+    ) {
+      throw new Error(
+        `Invalid SemanticSplitter budgets: maxChunkSize=${maxChunkSize}, minChunkSize=${minChunkSize}, chunkOverlap=${chunkOverlap}, maxRawChars=${maxRawChars}`,
+      );
+    }
+
     this.config = {
       maxChunkSize,
-      minChunkSize: config.minChunkSize ?? 100,
-      chunkOverlap: config.chunkOverlap ?? 200,
-      // 物理字符硬上限：默认为 maxChunkSize * 4（假设 1 token ≈ 4 chars）
-      maxRawChars: config.maxRawChars ?? maxChunkSize * 4,
+      minChunkSize,
+      chunkOverlap,
+      maxRawChars,
     };
   }
 
@@ -61,7 +82,7 @@ export class SemanticSplitter {
 
     // 记录索引域信息（调试用）
     if (domain === 'utf8') {
-      console.info(`[SemanticSplitter] Using UTF-8 byte indexing for ${filePath}`);
+      logger.debug({ filePath }, 'SemanticSplitter: Using UTF-8 byte indexing');
     }
 
     // 2. 初始化
@@ -105,21 +126,57 @@ export class SemanticSplitter {
     const maxChars = this.config.maxRawChars;
     if (maxChars <= 0) return chunks;
 
+    // 限制 vectorText 面包屑头部不超过物理上限的 1/4，避免长路径撑爆 Embedding 预算
+    const headerBudget = Math.floor(maxChars / 4);
     const result: ProcessedChunk[] = [];
     for (const chunk of chunks) {
       if (chunk.displayCode.length <= maxChars) {
-        result.push(chunk);
+        result.push(this.capChunkVectorHeader(chunk, headerBudget));
         continue;
       }
-      result.push(...this.forceSplitOversizedChunk(chunk, maxChars));
+      result.push(...this.forceSplitOversizedChunk(chunk, maxChars, headerBudget));
     }
     return result;
   }
 
   /**
+   * 当 displayCode 未超限但 vectorText 面包屑头部超出 headerBudget 时，截断头部并保留 metadata.contextPath。
+   */
+  private capChunkVectorHeader(chunk: ProcessedChunk, headerBudget: number): ProcessedChunk {
+    const fullHeader = buildVectorHeader(chunk.metadata.contextPath);
+    if (fullHeader.length <= headerBudget) {
+      return chunk;
+    }
+
+    const cappedHeader = buildVectorHeader(chunk.metadata.contextPath, headerBudget);
+    if (chunk.vectorText.startsWith(fullHeader)) {
+      return {
+        ...chunk,
+        vectorText: `${cappedHeader}${chunk.vectorText.slice(fullHeader.length)}`,
+      };
+    }
+
+    if (chunk.vectorText.startsWith('// Context: ')) {
+      const newlineIndex = chunk.vectorText.indexOf('\n');
+      if (newlineIndex >= 0 && newlineIndex + 1 > headerBudget) {
+        return {
+          ...chunk,
+          vectorText: `${cappedHeader}${chunk.vectorText.slice(newlineIndex + 1)}`,
+        };
+      }
+    }
+
+    return chunk;
+  }
+
+  /**
    * 将单个超长 chunk 按 maxChars 窗口硬切，保持 rawSpan 首尾相接覆盖原范围。
    */
-  private forceSplitOversizedChunk(chunk: ProcessedChunk, maxChars: number): ProcessedChunk[] {
+  private forceSplitOversizedChunk(
+    chunk: ProcessedChunk,
+    maxChars: number,
+    headerBudget: number = Math.floor(maxChars / 4),
+  ): ProcessedChunk[] {
     const code = chunk.displayCode;
     const { metadata } = chunk;
     const pieces: ProcessedChunk[] = [];
@@ -127,7 +184,15 @@ export class SemanticSplitter {
     let pieceIndex = 0;
 
     while (offset < code.length) {
-      const end = Math.min(offset + maxChars, code.length);
+      let end = Math.min(offset + maxChars, code.length);
+      // 防止在 UTF-16 高低代理对之间硬切导致出现孤立代理项（如 emoji 被劈开）
+      if (end < code.length && end - 1 > offset) {
+        const lastCode = code.charCodeAt(end - 1);
+        if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+          end -= 1;
+        }
+      }
+
       const pieceCode = code.slice(offset, end);
       const absStart = metadata.startIndex + offset;
       const absEnd = metadata.startIndex + end;
@@ -143,7 +208,7 @@ export class SemanticSplitter {
 
       pieces.push({
         displayCode: pieceCode,
-        vectorText: generateVectorText(pieceCode, metadata.contextPath),
+        vectorText: generateVectorText(pieceCode, metadata.contextPath, headerBudget),
         nwsSize,
         metadata: {
           ...metadata,
@@ -184,7 +249,7 @@ export class SemanticSplitter {
       return [
         {
           displayCode: code,
-          vectorText: `// Context: ${filePath}\n${code}`,
+          vectorText: generateVectorText(code, [filePath]),
           nwsSize: totalSize,
           metadata: {
             startIndex: 0,
@@ -228,7 +293,7 @@ export class SemanticSplitter {
 
         chunks.push({
           displayCode,
-          vectorText: `// Context: ${filePath}\n${displayCode}`,
+          vectorText: generateVectorText(displayCode, [filePath]),
           nwsSize: currentSize,
           metadata: {
             startIndex: chunkStartIndex,
@@ -261,7 +326,7 @@ export class SemanticSplitter {
       const chunkEndIndex = chunkStartIndex + displayCode.length;
       chunks.push({
         displayCode,
-        vectorText: `// Context: ${filePath}\n${displayCode}`,
+        vectorText: generateVectorText(displayCode, [filePath]),
         nwsSize: currentSize,
         metadata: {
           startIndex: chunkStartIndex,
@@ -323,6 +388,22 @@ export class SemanticSplitter {
    * 从节点中提取名称（数据驱动）
    */
   private extractNodeName(node: Parser.SyntaxNode, spec: LanguageSpecConfig): string | null {
+    // 优先沿语言规范的 nameFields 逐层下钻（适配 C/C++ 指针、函数声明器等嵌套结构）
+    for (const field of spec.nameFields) {
+      let name = node.childForFieldName(field);
+      while (name) {
+        if (spec.nameNodeTypes.has(name.type)) {
+          return name.text;
+        }
+        name = name.childForFieldName('declarator') ?? name.childForFieldName('name');
+      }
+    }
+
+    // 兼容赋值给变量的箭头函数（如 const myArrow = () => ...）
+    if (node.type === 'arrow_function' && node.parent?.type === 'variable_declarator') {
+      return node.parent.childForFieldName('name')?.text ?? null;
+    }
+
     // 遍历命名子节点，按 nameNodeTypes 匹配
     for (const child of node.namedChildren) {
       if (spec.nameNodeTypes.has(child.type)) {
@@ -432,37 +513,43 @@ export class SemanticSplitter {
     const spec = getLanguageSpec(this.language);
     const commentTypes = spec?.commentTypes ?? new Set(['comment']);
 
-    // 从 current 尾部收集连续的 comment 节点
+    // 从 current 尾部收集连续的 comment 节点（保持原有顺序）
     const absorbedNodes: Parser.SyntaxNode[] = [];
-    let absorbedNws = 0;
 
     while (current.nodes.length > 0) {
       const lastNode = current.nodes[current.nodes.length - 1];
       if (commentTypes.has(lastNode.type)) {
         current.nodes.pop();
-        const nodeNws = this.adapter.nws(lastNode.startIndex, lastNode.endIndex);
-        absorbedNodes.unshift(lastNode); // 保持顺序
-        absorbedNws += nodeNws;
-        current.size -= nodeNws;
+        absorbedNodes.unshift(lastNode);
       } else {
         break;
       }
     }
 
-    // 将吸附的 comment 推到 next 头部
-    if (absorbedNodes.length > 0) {
-      // 计算 gap（从最后一个 absorbed comment 到 next 第一个节点）
-      const gapNws =
-        next.nodes.length > 0
-          ? this.adapter.nws(
-              absorbedNodes[absorbedNodes.length - 1].endIndex,
-              next.nodes[0].startIndex,
-            )
-          : 0;
+    if (absorbedNodes.length === 0) return;
 
-      next.nodes.unshift(...absorbedNodes);
-      next.size += absorbedNws + gapNws;
+    // 整体计算被吸附注释区的 NWS，并在存在前置节点时一并扣除前置缝隙 NWS，防止预算漂移
+    const absorbStart = absorbedNodes[0].startIndex;
+    const absorbEnd = absorbedNodes[absorbedNodes.length - 1].endIndex;
+    const absorbedNws = this.adapter.nws(absorbStart, absorbEnd);
+
+    if (current.nodes.length > 0) {
+      const frontGapNws = this.adapter.nws(
+        current.nodes[current.nodes.length - 1].endIndex,
+        absorbStart,
+      );
+      current.size = Math.max(0, current.size - (absorbedNws + frontGapNws));
+    } else {
+      // 全注释窗口被吸空后直接归零，避免残留缝隙 NWS
+      current.size = 0;
     }
+
+    // 计算 gap（从最后一个 absorbed comment 到 next 原第一个节点）
+    const gapNws =
+      next.nodes.length > 0 ? this.adapter.nws(absorbEnd, next.nodes[0].startIndex) : 0;
+
+    next.nodes.unshift(...absorbedNodes);
+    next.size += absorbedNws + gapNws;
   }
 
   /**
@@ -529,15 +616,32 @@ export class SemanticSplitter {
       }
       const vectorEnd = end;
 
+      // 统一将解析器偏移（可能为 UTF-8 字节）转为 UTF-16 字符偏移，保证元数据可安全用于字符串切片
+      const charStart = this.adapter.byteToChar(start);
+      const charEnd = this.adapter.byteToChar(end);
+      const charRawStart = this.adapter.byteToChar(prevEnd);
+      const charRawEnd = this.adapter.byteToChar(rawSpanEnd);
+      let charVectorStart = this.adapter.byteToChar(vectorStart);
+      const charVectorEnd = this.adapter.byteToChar(vectorEnd);
+
+      // 若 overlap 起点落在 UTF-16 代理对低代理项上，回退 1 个码元到高代理项以保证字符完整
+      if (
+        charVectorStart > 0 &&
+        /[\uDC00-\uDFFF]/.test(this.code[charVectorStart] ?? '') &&
+        /[\uD800-\uDBFF]/.test(this.code[charVectorStart - 1] ?? '')
+      ) {
+        charVectorStart -= 1;
+      }
+
       // 使用 adapter.slice() 进行安全切片
       const displayCode = this.adapter.slice(start, end);
-      const vectorCode = this.adapter.slice(vectorStart, vectorEnd);
+      const vectorCode = this.code.slice(charVectorStart, charVectorEnd);
 
       const metadata: ChunkMetadata = {
-        startIndex: start,
-        endIndex: end,
-        rawSpan: { start: prevEnd, end: rawSpanEnd },
-        vectorSpan: { start: vectorStart, end: vectorEnd },
+        startIndex: charStart,
+        endIndex: charEnd,
+        rawSpan: { start: charRawStart, end: charRawEnd },
+        vectorSpan: { start: charVectorStart, end: charVectorEnd },
         filePath,
         language,
         contextPath: w.contextPath,
@@ -592,9 +696,25 @@ export class SemanticSplitter {
 }
 
 /**
+ * 构造向量化文本的面包屑头部（含结尾换行符），并在指定 headerBudget 时做字符上限截断。
+ */
+function buildVectorHeader(contextPath: string[], headerBudget?: number): string {
+  const breadcrumb = contextPath.join(' > ');
+  const fullHeader = `// Context: ${breadcrumb}\n`;
+  if (headerBudget === undefined || fullHeader.length <= headerBudget) {
+    return fullHeader;
+  }
+
+  // 预留末尾 \n，并清除切片边缘可能残余的 UTF-16 高代理项
+  const truncated = fullHeader
+    .slice(0, Math.max(0, headerBudget - 1))
+    .replace(/[\uD800-\uDBFF]$/, '');
+  return `${truncated}\n`;
+}
+
+/**
  * 生成向量化文本（包含面包屑上下文）
  */
-function generateVectorText(code: string, contextPath: string[]): string {
-  const breadcrumb = contextPath.join(' > ');
-  return `// Context: ${breadcrumb}\n${code}`;
+function generateVectorText(code: string, contextPath: string[], headerBudget?: number): string {
+  return `${buildVectorHeader(contextPath, headerBudget)}${code}`;
 }
