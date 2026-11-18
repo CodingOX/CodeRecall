@@ -7,6 +7,34 @@ import { isAllowedExtension } from './language.js';
 let ignoreInstance: ignore.Ignore | null = null;
 let includeMatcher: ignore.Ignore | null = null;
 let lastConfigHash: string | null = null;
+let hasNegationRules = false;
+let hasNodeModulesNegation = false;
+
+/**
+ * 扫描规则中的反选（!）声明，用于控制目录剪枝策略
+ */
+function collectNegationState(patterns: string[]): {
+  hasNegation: boolean;
+  hasNodeModulesNegation: boolean;
+} {
+  let hasNegation = false;
+  let nodeModulesNegated = false;
+
+  for (const rawLine of patterns) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    if (line.startsWith('!')) {
+      hasNegation = true;
+      if (line.includes('node_modules')) {
+        nodeModulesNegated = true;
+      }
+    }
+  }
+
+  return { hasNegation, hasNodeModulesNegation: nodeModulesNegated };
+}
 
 /**
  * 生成配置文件内容的 hash
@@ -50,17 +78,23 @@ export async function initFilter(rootPath: string): Promise<void> {
     return; // 配置未变更，复用实例
   }
 
+  const excludePatterns = getExcludePatterns();
   const ig = ignore();
-  ig.add(getExcludePatterns());
+  ig.add(excludePatterns);
 
+  let gitignoreLines: string[] = [];
   // 加载 .gitignore
   const gitignorePath = path.join(rootPath, '.gitignore');
   try {
     await fs.access(gitignorePath);
-    ig.add(await fs.readFile(gitignorePath, 'utf-8'));
+    const gitignoreContent = await fs.readFile(gitignorePath, 'utf-8');
+    ig.add(gitignoreContent);
+    gitignoreLines = gitignoreContent.split(/\r?\n/);
   } catch {
     // 文件不存在，静默跳过
   }
+
+  const negationState = collectNegationState([...excludePatterns, ...gitignoreLines]);
 
   const includeIg = ignore();
   includeIg.add(getIncludePatterns());
@@ -76,7 +110,40 @@ export async function initFilter(rootPath: string): Promise<void> {
 
   ignoreInstance = ig;
   includeMatcher = includeIg;
+  hasNegationRules = negationState.hasNegation;
+  hasNodeModulesNegation = negationState.hasNodeModulesNegation;
   lastConfigHash = currentHash;
+}
+
+/**
+ * 判断目录是否应在遍历阶段剪枝
+ *
+ * - `.git` 始终剪枝
+ * - 未被过滤规则命中的目录不剪枝
+ * - 存在 `!` 反选规则时，仅剪枝未显式反选的 `node_modules`，其余目录留待文件级过滤，
+ *   以确保如 `!dist/keep.ts` 的反选规则能正常生效
+ */
+export function shouldPruneDirectory(relativeDir: string): boolean {
+  const relDir = relativeDir.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!relDir) {
+    return false;
+  }
+
+  if (relDir === '.git' || relDir.endsWith('/.git')) {
+    return true;
+  }
+
+  if (!isFiltered(`${relDir}/`)) {
+    return false;
+  }
+
+  if (hasNegationRules) {
+    return (
+      (relDir === 'node_modules' || relDir.endsWith('/node_modules')) && !hasNodeModulesNegation
+    );
+  }
+
+  return true;
 }
 
 /**
